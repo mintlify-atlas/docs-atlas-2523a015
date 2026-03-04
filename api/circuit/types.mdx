@@ -1,0 +1,453 @@
+---
+title: Circuit Types
+description: Circuit types for constraint system synthesis
+---
+
+The `snarkvm-circuit-types` crate provides circuit equivalents of all console primitive types. Each circuit type tracks constraints and generates R1CS representations for zero-knowledge proofs.
+
+## Type Hierarchy
+
+```rust
+use snarkvm_circuit_types::prelude::*;
+
+// Primitive types
+use snarkvm_circuit_types::{
+    Address,      // Account addresses (x-coordinate of group element)
+    Boolean,      // Boolean values (0 or 1)
+    Field,        // Base field elements
+    Group,        // Affine curve points
+    Scalar,       // Scalar field elements
+    StringType,   // UTF-8 strings
+};
+
+// Integer types
+use snarkvm_circuit_types::{
+    I8, I16, I32, I64, I128,   // Signed integers
+    U8, U16, U32, U64, U128,   // Unsigned integers
+};
+```
+
+Source: `circuit/types/src/lib.rs:23-46`
+
+## Field
+
+### Structure
+
+Field elements are the fundamental building block:
+
+```rust
+pub struct Field<E: Environment> {
+    /// The linear combination contains the primary representation of the field.
+    linear_combination: LinearCombination<E::BaseField>,
+    /// An optional secondary representation in little-endian bits is provided,
+    /// so that calls to `ToBits` only incur constraint costs once.
+    bits_le: OnceCell<Vec<Boolean<E>>>,
+}
+
+impl<E: Environment> Inject for Field<E> {
+    type Primitive = console::Field<E::Network>;
+    
+    fn new(mode: Mode, field: Self::Primitive) -> Self {
+        Self { 
+            linear_combination: E::new_variable(mode, *field).into(),
+            bits_le: Default::default(),
+        }
+    }
+}
+```
+
+Source: `circuit/types/field/src/lib.rs:49-73`
+
+### Operations
+
+Field operations generate constraints:
+
+```rust
+// Arithmetic operations
+let a = Field::<A>::new(Mode::Private, console::Field::from(5u64));
+let b = Field::<A>::new(Mode::Private, console::Field::from(3u64));
+
+let c = &a + &b;  // Addition: 0 constraints
+let d = &a * &b;  // Multiplication: 1 constraint
+let e = a.square();  // Squaring: 1 constraint
+let f = a.inverse();  // Inversion: 1 constraint
+```
+
+### Constraint Costs
+
+| Operation | Constraints | Notes |
+|-----------|-------------|-------|
+| `Add` | 0 | Linear combination |
+| `Sub` | 0 | Linear combination |
+| `Neg` | 0 | Linear combination |
+| `Mul` | 1 | R1CS constraint |
+| `Square` | 1 | Optimized multiplication |
+| `Inverse` | 1 | Witness computation + constraint |
+| `Div` | 1 | Multiply by inverse |
+
+Source: `circuit/types/field/src/` (various operation files)
+
+## Boolean
+
+### Structure
+
+Booleans are field elements constrained to {0, 1}:
+
+```rust
+pub struct Boolean<E: Environment>(LinearCombination<E::BaseField>);
+
+impl<E: Environment> Inject for Boolean<E> {
+    type Primitive = bool;
+    
+    fn new(mode: Mode, value: Self::Primitive) -> Self {
+        let variable = E::new_variable(mode, match value {
+            true => E::BaseField::one(),
+            false => E::BaseField::zero(),
+        });
+        
+        // Ensure (1 - a) * a = 0
+        // `a` must be either 0 or 1.
+        E::enforce(|| (
+            E::one() - &variable,
+            &variable,
+            E::zero()
+        )).expect("Boolean variable constraint unsatisfied");
+        
+        Self(variable.into())
+    }
+}
+```
+
+Source: `circuit/types/boolean/src/lib.rs:40-72`
+
+### Boolean Operations
+
+```rust
+let a = Boolean::<A>::new(Mode::Private, true);
+let b = Boolean::<A>::new(Mode::Private, false);
+
+// Logical operations
+let c = &a & &b;  // AND
+let d = &a | &b;  // OR
+let e = &a ^ &b;  // XOR
+let f = !&a;      // NOT
+
+// Compound operations
+let g = Boolean::nand(&a, &b);  // NAND
+let h = Boolean::nor(&a, &b);   // NOR
+```
+
+### Constraint Costs
+
+| Operation | Constraints | Notes |
+|-----------|-------------|-------|
+| `new(Private)` | 1 | Boolean constraint |
+| `new(Public)` | 1 | Boolean constraint |
+| `new(Constant)` | 0 | No constraint |
+| `AND` | 1 | Multiplication |
+| `OR` | 1 | Uses AND + NOT |
+| `XOR` | 1 | Optimized constraint |
+| `NOT` | 0 | Linear combination |
+| `NAND` | 1 | AND + NOT |
+| `NOR` | 1 | OR + NOT |
+
+Source: `circuit/types/boolean/src/` (various operation files)
+
+## Integer
+
+### Structure
+
+Integers are represented as bit vectors:
+
+```rust
+pub struct Integer<E: Environment, I: IntegerType> {
+    bits_le: Vec<Boolean<E>>,
+    phantom: PhantomData<I>,
+}
+
+// Type aliases
+pub type I8<E> = Integer<E, i8>;
+pub type I16<E> = Integer<E, i16>;
+pub type I32<E> = Integer<E, i32>;
+pub type I64<E> = Integer<E, i64>;
+pub type I128<E> = Integer<E, i128>;
+
+pub type U8<E> = Integer<E, u8>;
+pub type U16<E> = Integer<E, u16>;
+pub type U32<E> = Integer<E, u32>;
+pub type U64<E> = Integer<E, u64>;
+pub type U128<E> = Integer<E, u128>;
+```
+
+Source: `circuit/types/integers/src/lib.rs:52-62`, `circuit/types/integers/src/lib.rs:83-87`
+
+### Creation
+
+```rust
+impl<E: Environment, I: IntegerType> Inject for Integer<E, I> {
+    type Primitive = console::Integer<E::Network, I>;
+    
+    fn new(mode: Mode, value: Self::Primitive) -> Self {
+        let mut bits_le = Vec::with_capacity(I::BITS as usize);
+        let mut value = *value;
+        for _ in 0..I::BITS {
+            bits_le.push(Boolean::new(mode, value & I::one() == I::one()));
+            value = value.wrapping_shr(1u32);
+        }
+        Self::from_bits_le(&bits_le)
+    }
+}
+```
+
+Source: `circuit/types/integers/src/lib.rs:104-116`
+
+### Operations
+
+Integers support checked and wrapping arithmetic:
+
+```rust
+let a = U32::<A>::new(Mode::Private, console::U32::new(100));
+let b = U32::<A>::new(Mode::Private, console::U32::new(50));
+
+// Checked operations (halt on overflow)
+let c = a.add_checked(&b);
+let d = a.mul_checked(&b);
+let e = a.div_checked(&b);
+
+// Wrapping operations (modular arithmetic)
+let f = a.add_wrapped(&b);
+let g = a.mul_wrapped(&b);
+let h = a.div_wrapped(&b);
+
+// Bitwise operations
+let i = &a & &b;  // AND
+let j = &a | &b;  // OR
+let k = &a ^ &b;  // XOR
+let l = !&a;      // NOT
+let m = a.shl_wrapped(2u8);  // Shift left
+```
+
+### Constraint Costs
+
+For N-bit integers:
+
+| Operation | Constraints | Notes |
+|-----------|-------------|-------|
+| `new(Private)` | N | N boolean constraints |
+| `new(Public)` | N | N boolean constraints |
+| `new(Constant)` | 0 | No constraints |
+| `add_checked` | ~N | Overflow detection |
+| `add_wrapped` | 0 | No constraints (linear) |
+| `mul_checked` | ~N² | Bit multiplication + overflow |
+| `mul_wrapped` | ~N² | Bit multiplication |
+| `div_checked` | ~N² | Long division |
+| `AND/OR/XOR` | N | Bitwise on booleans |
+| `NOT` | 0 | Negate each bit |
+
+Source: `circuit/types/integers/src/` (various operation files)
+
+## Group
+
+### Structure
+
+Group elements represent points on an elliptic curve:
+
+```rust
+pub struct Group<E: Environment> {
+    x: Field<E>,
+    y: Field<E>,
+}
+
+impl<E: Environment> Inject for Group<E> {
+    type Primitive = console::Group<E::Network>;
+    
+    fn new(mode: Mode, group: Self::Primitive) -> Self {
+        let x = Field::new(mode, group.to_x_coordinate());
+        let y = Field::new(mode, group.to_y_coordinate());
+        let point = Self { x, y };
+        
+        // Enforce that the point is in the group
+        point.enforce_in_group();
+        
+        point
+    }
+}
+```
+
+Source: `circuit/types/group/src/lib.rs:43-75`
+
+### Curve Constraints
+
+Group elements are constrained to lie on the twisted Edwards curve:
+
+```rust
+impl<E: Environment> Group<E> {
+    /// Enforces that `self` is on the curve.
+    /// 
+    /// Ensure ax^2 + y^2 = 1 + dx^2y^2
+    /// by checking that y^2 * (dx^2 - 1) = (ax^2 - 1)
+    pub fn enforce_on_curve(&self) {
+        let a = Field::constant(console::Field::new(E::EDWARDS_A));
+        let d = Field::constant(console::Field::new(E::EDWARDS_D));
+        
+        let x2 = self.x.square();
+        let y2 = self.y.square();
+        
+        let first = y2;
+        let second = (d * &x2) - &Field::one();
+        let third = (a * x2) - Field::one();
+        
+        // Ensure y^2 * (dx^2 - 1) = (ax^2 - 1).
+        E::enforce(|| (first, second, third))
+            .expect("Group enforce_on_curve constraint unsatisfied");
+    }
+}
+```
+
+Source: `circuit/types/group/src/lib.rs:79-96`
+
+### Operations
+
+```rust
+let a = Group::<A>::new(Mode::Private, console::Group::generator());
+let b = Group::<A>::new(Mode::Private, console::Group::generator());
+
+// Group operations
+let c = &a + &b;      // Addition
+let d = a.double();   // Doubling (optimized)
+let e = -a;           // Negation
+let f = &a - &b;      // Subtraction
+
+// Scalar multiplication
+let scalar = Scalar::<A>::new(Mode::Private, console::Scalar::from(5u64));
+let g = a * scalar;
+```
+
+### Constraint Costs
+
+| Operation | Constraints | Notes |
+|-----------|-------------|-------|
+| `new(Private)` | 13 | Point validation |
+| `new(Public)` | 13 | Point validation |
+| `new(Constant)` | 0 | No constraints |
+| `Add` | ~10 | Curve addition formula |
+| `Double` | ~8 | Optimized doubling |
+| `Neg` | 0 | Negate y-coordinate |
+| `Mul(Scalar)` | ~2500 | Double-and-add (253 bits) |
+
+Source: `circuit/types/group/src/` (various operation files)
+
+## Scalar
+
+Scalar elements are from the scalar field of the curve:
+
+```rust
+pub struct Scalar<E: Environment> {
+    linear_combination: LinearCombination<E::ScalarField>,
+    bits_le: OnceCell<Vec<Boolean<E>>>,
+}
+```
+
+Scalars have the same operations as Field but over the scalar field.
+
+## Address
+
+Addresses are x-coordinates of group elements:
+
+```rust
+pub struct Address<E: Environment>(Group<E>);
+
+impl<E: Environment> Inject for Address<E> {
+    type Primitive = console::Address<E::Network>;
+    
+    fn new(mode: Mode, address: Self::Primitive) -> Self {
+        Self(Group::new(mode, *address))
+    }
+}
+```
+
+## StringType
+
+Strings are UTF-8 byte arrays:
+
+```rust
+pub struct StringType<E: Environment, const MAX_BYTES: u32> {
+    bytes: Vec<U8<E>>,
+}
+```
+
+<Note>
+String length is limited by `Environment::MAX_STRING_BYTES` (currently 128 bytes). This prevents unbounded constraint growth.
+</Note>
+
+## Mode Propagation
+
+Operation modes are determined by inputs:
+
+```rust
+// Mode combination rules
+Mode::Constant + Mode::Constant = Mode::Constant
+Mode::Constant + Mode::Public   = Mode::Public
+Mode::Constant + Mode::Private  = Mode::Private
+Mode::Public   + Mode::Public   = Mode::Public
+Mode::Public   + Mode::Private  = Mode::Private
+Mode::Private  + Mode::Private  = Mode::Private
+
+impl Mode {
+    pub fn combine<M: IntoIterator<Item = Mode>>(starting_mode: Mode, modes: M) -> Mode {
+        let mut current_mode = starting_mode;
+        for next_mode in modes {
+            if current_mode.is_private() {
+                break;
+            }
+            if current_mode != next_mode {
+                match (current_mode, next_mode) {
+                    (Mode::Constant, Mode::Public)
+                    | (Mode::Constant, Mode::Private)
+                    | (Mode::Public, Mode::Private) => current_mode = next_mode,
+                    _ => (),
+                }
+            }
+        }
+        current_mode
+    }
+}
+```
+
+Source: `circuit/environment/src/helpers/mode.rs:54-78`
+
+## Testing Circuit Types
+
+```rust
+use snarkvm_circuit_environment::{Circuit, assert_scope};
+
+#[test]
+fn test_field_mul() {
+    Circuit::scope("field_mul", || {
+        let a = Field::<Circuit>::new(Mode::Private, console::Field::from(5u64));
+        let b = Field::<Circuit>::new(Mode::Private, console::Field::from(3u64));
+        
+        let c = &a * &b;
+        assert_eq!(console::Field::from(15u64), c.eject_value());
+        
+        // Assert (constants, public, private, constraints)
+        // 2 private variables + 1 result = 3 private
+        // 1 multiplication constraint
+        assert_scope!(0, 0, 3, 1);
+    });
+}
+```
+
+## Best Practices
+
+1. **Use constants when possible** - Constant operations generate no constraints
+2. **Minimize multiplications** - Each multiplication = 1 constraint
+3. **Cache bit decompositions** - `to_bits_le()` is expensive, cache results
+4. **Choose appropriate integer sizes** - Larger integers = more constraints
+5. **Test constraint counts** - Always verify expected resource usage
+
+## See Also
+
+- [Circuit Overview](/api/circuit/overview) - Constraint system architecture
+- [Circuit Environment](/api/circuit/environment) - Environment trait and constraints
+- [Console Types](/api/console/types) - Primitive types that circuits mirror

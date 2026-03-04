@@ -1,0 +1,261 @@
+---
+title: Installation
+description: Install SnarkVM on your system using Cargo or build from source
+---
+
+## Prerequisites
+
+Before installing SnarkVM, ensure you have Rust installed on your system.
+
+### Install Rust
+
+We recommend installing Rust using [rustup](https://www.rustup.rs/).
+
+<Tabs>
+  <Tab title="macOS / Linux">
+    ```bash
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+    ```
+    
+    For macOS users, install additional dependencies:
+    
+    ```bash
+    brew install pkgconf
+    brew install openssl
+    ```
+  </Tab>
+  
+  <Tab title="Windows">
+    Download and run the appropriate installer:
+    
+    - [Windows 64-bit executable](https://win.rustup.rs/x86_64)
+    - [Windows 32-bit executable](https://win.rustup.rs/i686)
+    
+    Follow the on-screen instructions to complete installation.
+  </Tab>
+</Tabs>
+
+<Note>
+SnarkVM requires Rust version **1.88.0** or higher. Verify your installation with:
+
+```bash
+rustc --version
+```
+</Note>
+
+## Install SnarkVM as a Library
+
+SnarkVM is primarily designed to be used as a library in Rust projects.
+
+### Add to Cargo.toml
+
+Add SnarkVM to your project's `Cargo.toml`:
+
+```toml
+[dependencies]
+snarkvm = "4.4.0"
+```
+
+### Using Specific Crates
+
+For more granular control, you can depend on individual crates:
+
+<CodeGroup>
+```toml Core Crates
+[dependencies]
+snarkvm-console = "4.4.0"
+snarkvm-circuit = "4.4.0"
+snarkvm-synthesizer = "4.4.0"
+```
+
+```toml Algorithms Only
+[dependencies]
+snarkvm-algorithms = "4.4.0"
+snarkvm-curves = "4.4.0"
+snarkvm-fields = "4.4.0"
+```
+
+```toml Full Features
+[dependencies]
+snarkvm = { version = "4.4.0", features = ["full"] }
+```
+</CodeGroup>
+
+### Available Features
+
+SnarkVM provides several feature flags:
+
+| Feature | Description |
+|---------|-------------|
+| `default` | Includes algorithms, circuit, console, ledger, synthesizer, and utilities |
+| `full` | Enables all crates including curves and fields |
+| `wasm` | WASM bindings for browser support |
+| `cuda` | GPU acceleration for cryptographic operations |
+| `async` | Async support for ledger and synthesizer |
+| `serial` | Disable parallel execution (useful for debugging) |
+
+Example with features:
+
+```toml
+[dependencies]
+snarkvm = { version = "4.4.0", features = ["full", "async"] }
+```
+
+## Build from Source
+
+To build SnarkVM from source for development or testing:
+
+<Steps>
+  <Step title="Clone the Repository">
+    ```bash
+    git clone --branch staging --single-branch https://github.com/ProvableHQ/snarkVM.git
+    cd snarkVM
+    ```
+    
+    <Note>
+    The `staging` branch contains the latest development code. For stable releases, use the `mainnet` branch.
+    </Note>
+  </Step>
+  
+  <Step title="Build the Library">
+    ```bash
+    cargo build --release
+    ```
+    
+    This will compile all workspace members. The release build is optimized and may take several minutes.
+  </Step>
+  
+  <Step title="Run Tests">
+    Verify the installation by running tests:
+    
+    ```bash
+    cargo test --release
+    ```
+    
+    <Warning>
+    Synthesizer tests can be slow. To run specific tests:
+    
+    ```bash
+    cargo test -p snarkvm-console -- test_name
+    ```
+    </Warning>
+  </Step>
+</Steps>
+
+## Verify Installation
+
+Create a simple program to verify your installation:
+
+<Steps>
+  <Step title="Create a New Project">
+    ```bash
+    cargo new snarkvm-test
+    cd snarkvm-test
+    ```
+  </Step>
+  
+  <Step title="Update Cargo.toml">
+    ```toml
+    [package]
+    name = "snarkvm-test"
+    version = "0.1.0"
+    edition = "2024"
+    
+    [dependencies]
+    snarkvm = "4.4.0"
+    anyhow = "1.0"
+    ```
+  </Step>
+  
+  <Step title="Test the Installation">
+    Replace `src/main.rs` with:
+    
+    ```rust
+    use snarkvm::prelude::*;
+    use anyhow::Result;
+    
+    fn main() -> Result<()> {
+        // Create a new private key
+        let rng = &mut snarkvm_utilities::TestRng::default();
+        let private_key = PrivateKey::<MainnetV0>::new(rng)?;
+        
+        // Derive the address
+        let address = Address::try_from(&private_key)?;
+        
+        println!("Private Key: {}", private_key);
+        println!("Address: {}", address);
+        
+        Ok(())
+    }
+    ```
+  </Step>
+  
+  <Step title="Run the Program">
+    ```bash
+    cargo run --release
+    ```
+    
+    You should see output showing a generated private key and address.
+  </Step>
+</Steps>
+
+## Development Tools
+
+### Code Formatting
+
+SnarkVM requires nightly Rust for formatting:
+
+```bash
+rustup install nightly
+cargo +nightly fmt --all
+```
+
+### Linting
+
+Run Clippy to catch common mistakes:
+
+```bash
+cargo clippy --all-targets --all-features -- -D warnings
+```
+
+<Warning>
+Clippy warnings are treated as errors in SnarkVM. All code must pass Clippy checks before being committed.
+</Warning>
+
+## Platform-Specific Notes
+
+<Tabs>
+  <Tab title="macOS">
+    If you encounter OpenSSL errors:
+    
+    ```bash
+    export OPENSSL_DIR=/opt/homebrew/opt/openssl@3
+    export PKG_CONFIG_PATH=/opt/homebrew/opt/openssl@3/lib/pkgconfig
+    ```
+  </Tab>
+  
+  <Tab title="Linux">
+    Install development packages:
+    
+    ```bash
+    # Ubuntu/Debian
+    sudo apt-get install build-essential pkg-config libssl-dev
+    
+    # Fedora
+    sudo dnf install gcc pkg-config openssl-devel
+    ```
+  </Tab>
+  
+  <Tab title="Windows">
+    Ensure you have Visual Studio Build Tools installed:
+    
+    - Download from [Visual Studio Downloads](https://visualstudio.microsoft.com/downloads/)
+    - Select "Desktop development with C++" workload
+  </Tab>
+</Tabs>
+
+## Next Steps
+
+<Card title="Quick Start Guide" icon="rocket" href="/quickstart">
+  Now that SnarkVM is installed, learn how to build your first application.
+</Card>

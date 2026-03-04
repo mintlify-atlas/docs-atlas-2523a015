@@ -1,0 +1,376 @@
+---
+title: 'Cryptographic Hash Functions'
+description: 'Poseidon and SHA-256 hash functions optimized for zero-knowledge circuits'
+---
+
+## Overview
+
+The `crypto_hash` module provides cryptographic hash functions designed for efficient use in zero-knowledge proof systems. The primary hash function is Poseidon, an algebraic hash optimized for ZK circuits.
+
+## Poseidon Hash
+
+### Poseidon Struct
+
+The Poseidon hash function with fixed output size.
+
+```rust
+pub struct Poseidon<F: PrimeField, const RATE: usize> {
+    parameters: Arc<PoseidonParameters<F, RATE, 1>>,
+}
+```
+
+<ParamField path="F" type="PrimeField">
+  The prime field over which the hash function operates
+</ParamField>
+
+<ParamField path="RATE" type="const usize">
+  The rate of the sponge (number of field elements absorbed per permutation)
+</ParamField>
+
+### Methods
+
+#### setup
+
+Initializes a new Poseidon hash function with default parameters.
+
+```rust
+pub fn setup() -> Self
+```
+
+<ResponseField name="return" type="Poseidon<F, RATE>">
+  A new Poseidon instance with default parameters for the field
+</ResponseField>
+
+**Example:**
+
+```rust
+use snarkvm_algorithms::crypto_hash::Poseidon;
+use snarkvm_curves::bls12_377::Fr;
+
+// Create a Poseidon hash with rate 4
+let poseidon = Poseidon::<Fr, 4>::setup();
+```
+
+#### evaluate
+
+Evaluates the hash function over a list of field elements.
+
+```rust
+pub fn evaluate(&self, input: &[F]) -> F
+```
+
+<ParamField path="input" type="&[F]">
+  Slice of field elements to hash
+</ParamField>
+
+<ResponseField name="return" type="F">
+  The hash output as a single field element
+</ResponseField>
+
+**Example:**
+
+```rust
+let input = vec![Fr::from(1u64), Fr::from(2u64), Fr::from(3u64)];
+let hash = poseidon.evaluate(&input);
+```
+
+#### evaluate_many
+
+Evaluates the hash function and returns multiple output elements.
+
+```rust
+pub fn evaluate_many(&self, input: &[F], num_outputs: usize) -> Vec<F>
+```
+
+<ParamField path="input" type="&[F]">
+  Slice of field elements to hash
+</ParamField>
+
+<ParamField path="num_outputs" type="usize">
+  Number of field elements to output
+</ParamField>
+
+<ResponseField name="return" type="Vec<F>">
+  Vector of hash output field elements
+</ResponseField>
+
+**Example:**
+
+```rust
+// Get 3 hash outputs from the input
+let hashes = poseidon.evaluate_many(&input, 3);
+assert_eq!(hashes.len(), 3);
+```
+
+#### evaluate_with_len
+
+Evaluates the hash function, including the input length in the hash.
+
+```rust
+pub fn evaluate_with_len(&self, input: &[F]) -> F
+```
+
+<ParamField path="input" type="&[F]">
+  Slice of field elements to hash
+</ParamField>
+
+<ResponseField name="return" type="F">
+  The hash output including length commitment
+</ResponseField>
+
+**Note:** This method prepends the length to prevent length-extension attacks.
+
+**Example:**
+
+```rust
+// Hash with length protection
+let hash = poseidon.evaluate_with_len(&input);
+```
+
+## PoseidonSponge
+
+### PoseidonSponge Struct
+
+A duplex sponge construction using the Poseidon permutation.
+
+```rust
+pub struct PoseidonSponge<F: PrimeField, const RATE: usize, const CAPACITY: usize> {
+    parameters: Arc<PoseidonParameters<F, RATE, CAPACITY>>,
+    state: State<F, RATE, CAPACITY>,
+    mode: DuplexSpongeMode,
+}
+```
+
+<ParamField path="RATE" type="const usize">
+  Number of field elements absorbed/squeezed per permutation
+</ParamField>
+
+<ParamField path="CAPACITY" type="const usize">
+  Number of field elements in the capacity (typically 1 for 128-bit security)
+</ParamField>
+
+### AlgebraicSponge Implementation
+
+PoseidonSponge implements the `AlgebraicSponge` trait for Fiat-Shamir transformations.
+
+#### absorb_native_field_elements
+
+Absorbs field elements into the sponge state.
+
+```rust
+pub fn absorb_native_field_elements<T: ToConstraintField<F>>(&mut self, elements: &[T])
+```
+
+<ParamField path="elements" type="&[T]">
+  Elements to absorb (automatically converted to field elements)
+</ParamField>
+
+**Example:**
+
+```rust
+use snarkvm_algorithms::{crypto_hash::PoseidonSponge, AlgebraicSponge};
+
+let params = PoseidonSponge::<Fr, 4, 1>::sample_parameters();
+let mut sponge = PoseidonSponge::new_with_parameters(&params);
+
+// Absorb field elements
+sponge.absorb_native_field_elements(&[Fr::from(1u64), Fr::from(2u64)]);
+```
+
+#### squeeze_native_field_elements
+
+Squeezes field elements from the sponge state.
+
+```rust
+pub fn squeeze_native_field_elements(&mut self, num_elements: usize) -> SmallVec<[F; 10]>
+```
+
+<ParamField path="num_elements" type="usize">
+  Number of field elements to squeeze
+</ParamField>
+
+<ResponseField name="return" type="SmallVec<[F; 10]>">
+  Squeezed field elements
+</ResponseField>
+
+**Example:**
+
+```rust
+// Squeeze 3 challenge field elements
+let challenges = sponge.squeeze_native_field_elements(3);
+```
+
+#### absorb_nonnative_field_elements
+
+Absorbs non-native field elements (from a different field).
+
+```rust
+pub fn absorb_nonnative_field_elements<Target: PrimeField>(
+    &mut self,
+    elements: impl IntoIterator<Item = Target>
+)
+```
+
+<ParamField path="elements" type="impl IntoIterator<Item = Target>">
+  Non-native field elements to absorb
+</ParamField>
+
+**Example:**
+
+```rust
+use snarkvm_curves::edwards_bls12::Fr as EdwardsFr;
+
+// Absorb elements from a different field
+let edwards_elements = vec![EdwardsFr::from(1u64), EdwardsFr::from(2u64)];
+sponge.absorb_nonnative_field_elements(edwards_elements.into_iter());
+```
+
+#### squeeze_nonnative_field_elements
+
+Squeezes non-native field elements.
+
+```rust
+pub fn squeeze_nonnative_field_elements<Target: PrimeField>(
+    &mut self,
+    num: usize
+) -> SmallVec<[Target; 10]>
+```
+
+<ParamField path="num" type="usize">
+  Number of non-native field elements to squeeze
+</ParamField>
+
+<ResponseField name="return" type="SmallVec<[Target; 10]>">
+  Squeezed non-native field elements
+</ResponseField>
+
+## Sponge State Management
+
+### State Struct
+
+Internal state of the Poseidon sponge.
+
+```rust
+pub struct State<F: PrimeField, const RATE: usize, const CAPACITY: usize> {
+    capacity_state: [F; CAPACITY],
+    rate_state: [F; RATE],
+}
+```
+
+The state is split into:
+- **Capacity**: Hidden state providing security
+- **Rate**: Public state for absorbing/squeezing
+
+### DuplexSpongeMode Enum
+
+Tracks the current mode of the sponge.
+
+```rust
+pub enum DuplexSpongeMode {
+    Absorbing { next_absorb_index: usize },
+    Squeezing { next_squeeze_index: usize },
+}
+```
+
+## Advanced Methods
+
+### get_limbs_representations
+
+Converts a non-native field element to limb representation.
+
+```rust
+pub fn get_limbs_representations<TargetField: PrimeField>(
+    elem: &TargetField,
+    optimization_type: OptimizationType,
+) -> SmallVec<[F; 10]>
+```
+
+<ParamField path="elem" type="&TargetField">
+  The field element to convert
+</ParamField>
+
+<ParamField path="optimization_type" type="OptimizationType">
+  Whether to optimize for weight or constraints
+</ParamField>
+
+<ResponseField name="return" type="SmallVec<[F; 10]>">
+  Limb representation in the base field
+</ResponseField>
+
+### get_bits
+
+Obtains random bits from the sponge.
+
+```rust
+pub fn get_bits(&mut self, num_bits: usize) -> Vec<bool>
+```
+
+<ParamField path="num_bits" type="usize">
+  Number of random bits to generate
+</ParamField>
+
+<ResponseField name="return" type="Vec<bool>">
+  Random bits derived from the sponge state
+</ResponseField>
+
+**Note:** Not uniformly distributed; use for specific applications only.
+
+## Implementation Details
+
+### Permutation
+
+The Poseidon permutation consists of:
+
+1. **Full rounds**: S-box applied to all state elements
+2. **Partial rounds**: S-box applied to only the first state element
+3. **MDS matrix multiplication**: Mixing layer
+
+```rust
+fn permute(&mut self) {
+    for i in 0..(partial_rounds + full_rounds) {
+        let is_full_round = !partial_round_range.contains(&i);
+        self.apply_ark(i);        // Add round constants
+        self.apply_s_box(is_full_round); // S-box layer
+        self.apply_mds();          // MDS mixing
+    }
+}
+```
+
+### Parameters
+
+Poseidon parameters include:
+
+- **Alpha**: S-box exponent (typically 5 or 17)
+- **Full rounds**: Number of full S-box rounds
+- **Partial rounds**: Number of partial S-box rounds
+- **ARK**: Round constants for domain separation
+- **MDS**: Maximum distance separable matrix
+
+### Security
+
+Poseidon provides:
+
+- **128-bit security** with CAPACITY = 1
+- **Collision resistance** via sponge construction
+- **Preimage resistance** via one-way permutation
+
+## Usage in Fiat-Shamir
+
+PoseidonSponge is used for Fiat-Shamir transformations in proof systems:
+
+```rust
+type FS = PoseidonSponge<Fq, 2, 1>;
+let mut fs_rng = FS::new_with_parameters(&fs_parameters);
+
+// Absorb commitments
+fs_rng.absorb_native_field_elements(&commitments);
+
+// Generate challenge
+let challenge = fs_rng.squeeze_native_field_elements(1)[0];
+```
+
+## See Also
+
+- [SNARK Implementations](/api/algorithms/snark) - Uses Poseidon for Fiat-Shamir
+- [Polynomial Commitments](/api/algorithms/polycommit) - Challenge generation
+- [FFT Operations](/api/algorithms/fft) - Polynomial arithmetic

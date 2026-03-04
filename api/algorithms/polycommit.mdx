@@ -1,0 +1,646 @@
+---
+title: 'Polynomial Commitment Schemes'
+description: 'KZG10 and SonicKZG10 polynomial commitment implementations'
+---
+
+## Overview
+
+The `polycommit` module implements polynomial commitment schemes that allow a prover to commit to a polynomial and later prove evaluations at specific points. The implementations are based on Kate-Zaverucha-Goldberg (KZG10) commitments.
+
+## KZG10
+
+### Overview
+
+KZG10 is a polynomial commitment scheme based on elliptic curve pairings. It provides constant-size commitments and evaluation proofs.
+
+```rust
+pub struct KZG10<E: PairingEngine>(PhantomData<E>);
+```
+
+### Setup
+
+#### load_srs
+
+Loads the structured reference string (SRS) for a given maximum degree.
+
+```rust
+pub fn load_srs(max_degree: usize) -> Result<UniversalParams<E>, PCError>
+```
+
+<ParamField path="max_degree" type="usize">
+  Maximum polynomial degree supported
+</ParamField>
+
+<ResponseField name="return" type="Result<UniversalParams<E>>">
+  Universal parameters supporting polynomials up to max_degree
+</ResponseField>
+
+**Example:**
+
+```rust
+use snarkvm_algorithms::polycommit::kzg10::KZG10;
+use snarkvm_curves::bls12_377::Bls12_377;
+
+type KZG = KZG10<Bls12_377>;
+
+let max_degree = 1 << 16;
+let srs = KZG::load_srs(max_degree)?;
+```
+
+### Commitment Operations
+
+#### commit
+
+Commits to a polynomial.
+
+```rust
+pub fn commit(
+    powers: &Powers<E>,
+    polynomial: &Polynomial<'_, E::Fr>,
+    hiding_bound: Option<usize>,
+    rng: Option<&mut dyn RngCore>,
+) -> Result<(KZGCommitment<E>, KZGRandomness<E>), PCError>
+```
+
+<ParamField path="powers" type="&Powers<E>">
+  Powers of the secret evaluation point
+</ParamField>
+
+<ParamField path="polynomial" type="&Polynomial<'_, E::Fr>">
+  The polynomial to commit to (dense or sparse)
+</ParamField>
+
+<ParamField path="hiding_bound" type="Option<usize>">
+  Optional hiding degree for zero-knowledge
+</ParamField>
+
+<ParamField path="rng" type="Option<&mut dyn RngCore>">
+  Random number generator (required if hiding_bound is Some)
+</ParamField>
+
+<ResponseField name="return" type="Result<(KZGCommitment<E>, KZGRandomness<E>)>">
+  Commitment and randomness (for later opening)
+</ResponseField>
+
+**Example:**
+
+```rust
+use snarkvm_algorithms::fft::DensePolynomial;
+use snarkvm_utilities::rand::TestRng;
+
+let mut rng = TestRng::default();
+let polynomial = DensePolynomial::from_coefficients_vec(
+    vec![Fr::from(1u64), Fr::from(2u64), Fr::from(3u64)]
+);
+
+let (commitment, randomness) = KZG::commit(
+    &powers,
+    &(&polynomial).into(),
+    Some(1), // hiding bound
+    Some(&mut rng),
+)?;
+```
+
+#### commit_lagrange
+
+Commits to a polynomial given in Lagrange basis (evaluations).
+
+```rust
+pub fn commit_lagrange(
+    lagrange_basis: &LagrangeBasis<E>,
+    evaluations: &[E::Fr],
+    hiding_bound: Option<usize>,
+    rng: Option<&mut dyn RngCore>,
+) -> Result<(KZGCommitment<E>, KZGRandomness<E>), PCError>
+```
+
+<ParamField path="lagrange_basis" type="&LagrangeBasis<E>">
+  Lagrange basis powers
+</ParamField>
+
+<ParamField path="evaluations" type="&[E::Fr]">
+  Polynomial evaluations over the domain
+</ParamField>
+
+<ResponseField name="return" type="Result<(KZGCommitment<E>, KZGRandomness<E>)>">
+  Commitment and randomness
+</ResponseField>
+
+**Example:**
+
+```rust
+let domain = EvaluationDomain::new(256)?;
+let evaluations = vec![Fr::from(1u64); 256];
+
+let (commitment, randomness) = KZG::commit_lagrange(
+    &lagrange_basis,
+    &evaluations,
+    None,
+    None,
+)?;
+```
+
+### Opening Proofs
+
+#### open
+
+Creates an evaluation proof at a specific point.
+
+```rust
+pub fn open(
+    powers: &Powers<E>,
+    polynomial: &DensePolynomial<E::Fr>,
+    point: E::Fr,
+    rand: &KZGRandomness<E>,
+) -> Result<KZGProof<E>, PCError>
+```
+
+<ParamField path="powers" type="&Powers<E>">
+  Powers of the secret
+</ParamField>
+
+<ParamField path="polynomial" type="&DensePolynomial<E::Fr>">
+  The committed polynomial
+</ParamField>
+
+<ParamField path="point" type="E::Fr">
+  Evaluation point
+</ParamField>
+
+<ParamField path="rand" type="&KZGRandomness<E>">
+  Randomness from commitment
+</ParamField>
+
+<ResponseField name="return" type="Result<KZGProof<E>>">
+  Evaluation proof
+</ResponseField>
+
+**Example:**
+
+```rust
+let point = Fr::from(42u64);
+let proof = KZG::open(&powers, &polynomial, point, &randomness)?;
+```
+
+#### open_lagrange
+
+Creates an evaluation proof from Lagrange evaluations.
+
+```rust
+pub fn open_lagrange(
+    lagrange_basis: &LagrangeBasis<E>,
+    domain_elements: &[E::Fr],
+    evaluations: &[E::Fr],
+    point: E::Fr,
+    evaluation_at_point: E::Fr,
+) -> Result<KZGProof<E>>
+```
+
+<ParamField path="domain_elements" type="&[E::Fr]">
+  Elements of the evaluation domain
+</ParamField>
+
+<ParamField path="evaluations" type="&[E::Fr]">
+  Polynomial evaluations
+</ParamField>
+
+<ParamField path="point" type="E::Fr">
+  Evaluation point (must not be in domain)
+</ParamField>
+
+<ParamField path="evaluation_at_point" type="E::Fr">
+  Expected value at the point
+</ParamField>
+
+<ResponseField name="return" type="Result<KZGProof<E>>">
+  Evaluation proof
+</ResponseField>
+
+### Verification
+
+#### check
+
+Verifies a single evaluation proof.
+
+```rust
+pub fn check(
+    vk: &VerifierKey<E>,
+    commitment: &KZGCommitment<E>,
+    point: E::Fr,
+    value: E::Fr,
+    proof: &KZGProof<E>,
+) -> Result<bool, PCError>
+```
+
+<ParamField path="vk" type="&VerifierKey<E>">
+  Verifier key
+</ParamField>
+
+<ParamField path="commitment" type="&KZGCommitment<E>">
+  Polynomial commitment
+</ParamField>
+
+<ParamField path="point" type="E::Fr">
+  Evaluation point
+</ParamField>
+
+<ParamField path="value" type="E::Fr">
+  Claimed evaluation
+</ParamField>
+
+<ParamField path="proof" type="&KZGProof<E>">
+  Evaluation proof
+</ParamField>
+
+<ResponseField name="return" type="Result<bool>">
+  True if the proof is valid
+</ResponseField>
+
+**Example:**
+
+```rust
+let value = polynomial.evaluate(point);
+let is_valid = KZG::check(&vk, &commitment, point, value, &proof)?;
+assert!(is_valid);
+```
+
+#### batch_check
+
+Verifies multiple evaluation proofs with a single pairing check.
+
+```rust
+pub fn batch_check<R: RngCore>(
+    vk: &VerifierKey<E>,
+    commitments: &[KZGCommitment<E>],
+    points: &[E::Fr],
+    values: &[E::Fr],
+    proofs: &[KZGProof<E>],
+    rng: &mut R,
+) -> Result<bool>
+```
+
+<ParamField path="commitments" type="&[KZGCommitment<E>]">
+  Vector of polynomial commitments
+</ParamField>
+
+<ParamField path="points" type="&[E::Fr]">
+  Vector of evaluation points
+</ParamField>
+
+<ParamField path="values" type="&[E::Fr]">
+  Vector of claimed evaluations
+</ParamField>
+
+<ParamField path="proofs" type="&[KZGProof<E>]">
+  Vector of evaluation proofs
+</ParamField>
+
+<ParamField path="rng" type="&mut R">
+  Random number generator for challenge sampling
+</ParamField>
+
+<ResponseField name="return" type="Result<bool>">
+  True if all proofs are valid
+</ResponseField>
+
+**Example:**
+
+```rust
+let mut rng = TestRng::default();
+let is_valid = KZG::batch_check(
+    &vk,
+    &commitments,
+    &points,
+    &values,
+    &proofs,
+    &mut rng,
+)?;
+```
+
+## SonicKZG10
+
+### Overview
+
+SonicKZG10 extends KZG10 with batching and degree bound enforcement from the Sonic and AuroraLight protocols.
+
+```rust
+pub struct SonicKZG10<E: PairingEngine, S: AlgebraicSponge<E::Fq, 2>>(
+    PhantomData<(E, S)>,
+);
+```
+
+### Setup
+
+#### trim
+
+Specializes universal parameters for specific degree bounds and circuit sizes.
+
+```rust
+pub fn trim(
+    pp: &UniversalParams<E>,
+    supported_degree: usize,
+    supported_lagrange_sizes: impl IntoIterator<Item = usize>,
+    supported_hiding_bound: usize,
+    enforced_degree_bounds: Option<&[usize]>,
+) -> Result<(CommitterKey<E>, UniversalVerifier<E>)>
+```
+
+<ParamField path="pp" type="&UniversalParams<E>">
+  Universal parameters
+</ParamField>
+
+<ParamField path="supported_degree" type="usize">
+  Maximum polynomial degree
+</ParamField>
+
+<ParamField path="supported_lagrange_sizes" type="impl IntoIterator<Item = usize>">
+  Lagrange basis sizes to support
+</ParamField>
+
+<ParamField path="supported_hiding_bound" type="usize">
+  Maximum hiding polynomial degree
+</ParamField>
+
+<ParamField path="enforced_degree_bounds" type="Option<&[usize]>">
+  Degree bounds to enforce
+</ParamField>
+
+<ResponseField name="return" type="Result<(CommitterKey<E>, UniversalVerifier<E>)>">
+  Committer key and universal verifier
+</ResponseField>
+
+**Example:**
+
+```rust
+use snarkvm_algorithms::polycommit::sonic_pc::SonicKZG10;
+
+type PC = SonicKZG10<Bls12_377, PoseidonSponge<Fq, 2, 1>>;
+
+let max_degree = 1 << 16;
+let pp = PC::load_srs(max_degree)?;
+
+let (ck, vk) = PC::trim(
+    &pp,
+    max_degree,
+    [1 << 8, 1 << 12].into_iter(),
+    1, // hiding bound
+    Some(&[1 << 10, 1 << 14]), // degree bounds
+)?;
+```
+
+### Batched Operations
+
+#### commit
+
+Commits to multiple labeled polynomials.
+
+```rust
+pub fn commit<'b>(
+    universal_prover: &UniversalProver<E>,
+    ck: &CommitterUnionKey<E>,
+    polynomials: impl IntoIterator<Item = LabeledPolynomialWithBasis<'b, E::Fr>>,
+    rng: Option<&mut dyn RngCore>,
+) -> Result<(Vec<LabeledCommitment<Commitment<E>>>, Vec<Randomness<E>>), PCError>
+```
+
+<ParamField path="polynomials" type="impl IntoIterator<Item = LabeledPolynomialWithBasis>">
+  Labeled polynomials to commit to
+</ParamField>
+
+<ResponseField name="return" type="Result<(Vec<LabeledCommitment>, Vec<Randomness>)>">
+  Labeled commitments and randomness values
+</ResponseField>
+
+**Example:**
+
+```rust
+use snarkvm_algorithms::polycommit::sonic_pc::LabeledPolynomial;
+
+let poly1 = LabeledPolynomial::new("poly1".to_string(), polynomial1, None, None);
+let poly2 = LabeledPolynomial::new("poly2".to_string(), polynomial2, None, None);
+
+let (commitments, randomness) = PC::commit(
+    &universal_prover,
+    &ck,
+    vec![poly1.into(), poly2.into()],
+    Some(&mut rng),
+)?;
+```
+
+#### batch_open
+
+Opens multiple polynomials at multiple points.
+
+```rust
+pub fn batch_open<'a>(
+    universal_prover: &UniversalProver<E>,
+    ck: &CommitterUnionKey<E>,
+    labeled_polynomials: impl ExactSizeIterator<Item = &'a LabeledPolynomial<E::Fr>>,
+    query_set: &QuerySet<E::Fr>,
+    rands: impl ExactSizeIterator<Item = &'a Randomness<E>>,
+    fs_rng: &mut S,
+) -> Result<BatchProof<E>>
+```
+
+<ParamField path="labeled_polynomials" type="impl ExactSizeIterator<Item = &'a LabeledPolynomial>">
+  Polynomials to open
+</ParamField>
+
+<ParamField path="query_set" type="&QuerySet<E::Fr>">
+  Set of (label, point) queries
+</ParamField>
+
+<ParamField path="rands" type="impl ExactSizeIterator<Item = &'a Randomness>">
+  Randomness from commitments
+</ParamField>
+
+<ParamField path="fs_rng" type="&mut S">
+  Fiat-Shamir sponge
+</ParamField>
+
+<ResponseField name="return" type="Result<BatchProof<E>>">
+  Batch opening proof
+</ResponseField>
+
+#### batch_check
+
+Verifies batch opening proofs.
+
+```rust
+pub fn batch_check<'a>(
+    vk: &UniversalVerifier<E>,
+    commitments: impl IntoIterator<Item = &'a LabeledCommitment<Commitment<E>>>,
+    query_set: &QuerySet<E::Fr>,
+    values: &Evaluations<E::Fr>,
+    proof: &BatchProof<E>,
+    fs_rng: &mut S,
+) -> Result<bool>
+```
+
+<ParamField path="commitments" type="impl IntoIterator<Item = &'a LabeledCommitment>">
+  Labeled commitments
+</ParamField>
+
+<ParamField path="values" type="&Evaluations<E::Fr>">
+  Claimed evaluation values
+</ParamField>
+
+<ParamField path="proof" type="&BatchProof<E>">
+  Batch proof to verify
+</ParamField>
+
+<ResponseField name="return" type="Result<bool>">
+  True if the batch proof is valid
+</ResponseField>
+
+## Key Structures
+
+### UniversalParams
+
+Universal structured reference string.
+
+```rust
+pub struct UniversalParams<E: PairingEngine> {
+    pub powers_of_beta_g: Vec<E::G1Affine>,
+    pub powers_of_beta_times_gamma_g: BTreeMap<usize, E::G1Affine>,
+    pub h: E::G2Affine,
+    pub beta_h: E::G2Affine,
+    // Prepared elements for pairings
+}
+```
+
+### Powers
+
+Powers of the secret for commitment.
+
+```rust
+pub struct Powers<E: PairingEngine> {
+    pub powers_of_beta_g: Cow<'static, [E::G1Affine]>,
+    pub powers_of_beta_times_gamma_g: Cow<'static, [E::G1Affine]>,
+}
+```
+
+### KZGCommitment
+
+A polynomial commitment.
+
+```rust
+pub struct KZGCommitment<E: PairingEngine>(pub E::G1Affine);
+```
+
+### KZGProof
+
+An evaluation proof.
+
+```rust
+pub struct KZGProof<E: PairingEngine> {
+    pub w: E::G1Affine,           // Witness polynomial commitment
+    pub random_v: Option<E::Fr>,   // Optional hiding randomness evaluation
+}
+```
+
+### KZGRandomness
+
+Randomness used for hiding commitments.
+
+```rust
+pub struct KZGRandomness<E: PairingEngine> {
+    pub blinding_polynomial: DensePolynomial<E::Fr>,
+}
+```
+
+## Degree Bounds
+
+### KZGDegreeBounds Enum
+
+Specifies which degree bounds to enforce.
+
+```rust
+pub enum KZGDegreeBounds {
+    All,                    // All degrees from 0 to max
+    Varuna,                 // Varuna-specific bounds (domain_size - 2)
+    List(Vec<usize>),       // Explicit list of bounds
+    None,                   // No degree bounds
+}
+```
+
+### Degree Bound Enforcement
+
+Degree bounds are enforced by committing with shifted powers:
+
+```rust
+// Commit with degree bound
+let degree_bound = Some(1 << 10);
+let poly = LabeledPolynomial::new(
+    "bounded_poly".to_string(),
+    polynomial,
+    degree_bound,
+    None,
+);
+```
+
+## Complete Example
+
+```rust
+use snarkvm_algorithms::{
+    fft::DensePolynomial,
+    polycommit::kzg10::KZG10,
+};
+use snarkvm_curves::bls12_377::{Bls12_377, Fr};
+use snarkvm_utilities::rand::TestRng;
+
+type KZG = KZG10<Bls12_377>;
+
+fn main() -> Result<()> {
+    let mut rng = TestRng::default();
+    
+    // Setup
+    let max_degree = 1 << 10;
+    let pp = KZG::load_srs(max_degree)?;
+    
+    // Trim for specific degree
+    let degree = 100;
+    let (powers, vk) = {
+        let powers_of_beta_g = pp.powers_of_beta_g(0, degree + 1)?.to_vec();
+        let powers = Powers {
+            powers_of_beta_g: Cow::Owned(powers_of_beta_g),
+            powers_of_beta_times_gamma_g: Cow::Owned(vec![]),
+        };
+        let vk = VerifierKey {
+            g: pp.power_of_beta_g(0)?,
+            gamma_g: pp.powers_of_beta_times_gamma_g()[&0],
+            h: pp.h,
+            beta_h: pp.beta_h(),
+            prepared_h: pp.prepared_h.clone(),
+            prepared_beta_h: pp.prepared_beta_h.clone(),
+        };
+        (powers, vk)
+    };
+    
+    // Commit
+    let polynomial = DensePolynomial::rand(degree, &mut rng);
+    let (commitment, randomness) = KZG::commit(
+        &powers,
+        &(&polynomial).into(),
+        None,
+        None,
+    )?;
+    
+    // Open at a point
+    let point = Fr::rand(&mut rng);
+    let value = polynomial.evaluate(point);
+    let proof = KZG::open(&powers, &polynomial, point, &randomness)?;
+    
+    // Verify
+    let is_valid = KZG::check(&vk, &commitment, point, value, &proof)?;
+    assert!(is_valid);
+    
+    Ok(())
+}
+```
+
+## See Also
+
+- [FFT Operations](/api/algorithms/fft) - Polynomial arithmetic
+- [SNARK Implementations](/api/algorithms/snark) - Uses polynomial commitments
+- [Cryptographic Hash Functions](/api/algorithms/crypto-hash) - Fiat-Shamir transformation

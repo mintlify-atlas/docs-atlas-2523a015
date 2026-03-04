@@ -1,0 +1,293 @@
+---
+title: Circuit Overview
+description: Overview of the circuit crate and R1CS constraint system
+---
+
+The `snarkvm-circuit` crate provides circuit equivalents of all console types, enabling zero-knowledge proof generation through constraint system synthesis. It implements the R1CS (Rank-1 Constraint System) framework used by the Marlin proof system.
+
+## Architecture
+
+The circuit crate mirrors the structure of the console crate:
+
+```rust
+use snarkvm_circuit::prelude::*;
+
+// Circuit modules
+use snarkvm_circuit::{
+    environment,  // Circuit environment and constraint tracking
+    types,        // Circuit types (Field, Boolean, Integer, etc.)
+    program,      // Circuit program types (Request, Response, etc.)
+    account,      // Circuit account types
+    algorithms,   // Circuit cryptographic algorithms
+    collections,  // Circuit collections
+    network,      // Circuit network configuration
+};
+```
+
+## Constraint System
+
+### R1CS Structure
+
+The circuit crate builds an R1CS constraint system where each constraint has the form:
+
+```
+(A) * (B) = (C)
+```
+
+Where `A`, `B`, and `C` are linear combinations of variables:
+
+```rust
+use snarkvm_circuit_environment::prelude::*;
+
+// Linear combinations track variables and their coefficients
+type LinearCombination<F> = {
+    constant: F,
+    terms: Vec<(Variable<F>, F)>,
+    value: F,
+};
+```
+
+Source: `circuit/environment/src/helpers/linear_combination.rs:36-42`
+
+### Variable Types
+
+Circuit variables come in three modes:
+
+```rust
+pub enum Mode {
+    Constant,  // Known at compile time, no constraints
+    Public,    // Public inputs to the proof
+    Private,   // Private witness values
+}
+```
+
+Source: `circuit/environment/src/helpers/mode.rs:21-25`
+
+## Console/Circuit Synchronization
+
+<Note>
+The circuit and console crates **must remain synchronized**. Every console type has a corresponding circuit type with identical structure and API. When modifying one, always update the other.
+</Note>
+
+### Inject and Eject Traits
+
+Circuit types convert to/from console types using `Inject` and `Eject`:
+
+```rust
+pub trait Inject {
+    type Primitive;
+    
+    /// Initializes a circuit of the given mode and primitive value.
+    fn new(mode: Mode, value: Self::Primitive) -> Self;
+    
+    /// Initializes a constant of the given primitive value.
+    fn constant(value: Self::Primitive) -> Self;
+}
+
+pub trait Eject {
+    type Primitive;
+    
+    /// Ejects the mode and primitive value of the circuit type.
+    fn eject(&self) -> (Mode, Self::Primitive);
+    
+    /// Ejects the mode of the circuit type.
+    fn eject_mode(&self) -> Mode;
+    
+    /// Ejects the circuit type as a primitive value.
+    fn eject_value(&self) -> Self::Primitive;
+}
+```
+
+Source: `circuit/environment/src/traits/inject.rs:19-36`, `circuit/environment/src/traits/eject.rs:18-38`
+
+## Constraint Counting
+
+The environment tracks resource usage:
+
+```rust
+pub struct Count(pub Constant, pub Public, pub Private, pub Constraints);
+
+impl Count {
+    /// Returns exact counts.
+    pub const fn is(num_constants: u64, num_public: u64, 
+                    num_private: u64, num_constraints: u64) -> Self;
+    
+    /// Returns upper bound counts.
+    pub const fn less_than(num_constants: u64, num_public: u64,
+                          num_private: u64, num_constraints: u64) -> Self;
+}
+```
+
+Source: `circuit/environment/src/helpers/count.rs:26-53`
+
+### Testing Constraints
+
+Use constraint counting in tests:
+
+```rust
+use snarkvm_circuit_environment::{Circuit, assert_scope};
+
+Circuit::scope("test_boolean_and", || {
+    let a = Boolean::<Circuit>::new(Mode::Private, true);
+    let b = Boolean::<Circuit>::new(Mode::Private, false);
+    let c = a & b;
+    
+    // Assert (constants, public, private, constraints)
+    assert_scope!(0, 0, 3, 3);
+});
+```
+
+## R1CS Generation
+
+### Enforcing Constraints
+
+The environment provides methods to add constraints:
+
+```rust
+pub trait Environment {
+    /// Adds one constraint enforcing that `(A * B) == C`.
+    fn enforce<Fn, A, B, C>(constraint: Fn) -> Result<(), ConstraintUnsatisfied>
+    where
+        Fn: FnOnce() -> (A, B, C),
+        A: Into<LinearCombination<Self::BaseField>>,
+        B: Into<LinearCombination<Self::BaseField>>,
+        C: Into<LinearCombination<Self::BaseField>>;
+    
+    /// Adds one constraint enforcing that the given boolean is `true`.
+    fn assert<Boolean: Into<LinearCombination<Self::BaseField>>>(
+        boolean: Boolean,
+    ) -> Result<(), ConstraintUnsatisfied>;
+    
+    /// Adds one constraint enforcing that `A == B`.
+    fn assert_eq<A, B>(a: A, b: B) -> Result<(), ConstraintUnsatisfied>
+    where
+        A: Into<LinearCombination<Self::BaseField>>,
+        B: Into<LinearCombination<Self::BaseField>>;
+    
+    /// Adds one constraint enforcing that `A != B`.
+    fn assert_neq<A, B>(a: A, b: B) -> Result<(), ConstraintUnsatisfied>
+    where
+        A: Into<LinearCombination<Self::BaseField>>,
+        B: Into<LinearCombination<Self::BaseField>>;
+}
+```
+
+Source: `circuit/environment/src/environment.rs:64-108`
+
+### Extracting R1CS
+
+Extract the complete constraint system:
+
+```rust
+impl<E: Environment> E {
+    /// Returns the R1CS circuit, resetting the circuit.
+    fn eject_r1cs_and_reset() -> R1CS<Self::BaseField>;
+    
+    /// Returns the R1CS assignment, resetting the circuit.
+    fn eject_assignment_and_reset() -> Assignment<Field>;
+}
+
+pub struct R1CS<F: PrimeField> {
+    constants: Vec<Variable<F>>,
+    public: Vec<Variable<F>>,
+    private: Vec<Variable<F>>,
+    constraints: Vec<Arc<Constraint<F>>>,
+}
+```
+
+Source: `circuit/environment/src/environment.rs:183-189`, `circuit/environment/src/helpers/r1cs.rs:63-71`
+
+## Environment Scoping
+
+Use scopes to organize constraint generation:
+
+```rust
+impl<E: Environment> E {
+    /// Enters a new scope for the environment.
+    fn scope<S: Into<String>, Fn, Output>(name: S, logic: Fn) -> Output
+    where
+        Fn: FnOnce() -> Output;
+    
+    /// Returns constraint counts for the current scope.
+    fn count_in_scope() -> (u64, u64, u64, u64, (u64, u64, u64));
+}
+
+// Example usage
+Circuit::scope("hash_function", || {
+    // Constraints added here are tracked separately
+    let hash = hash_to_field(&input);
+    
+    // Get counts for just this scope
+    let (constants, public, private, constraints, _) = Circuit::count_in_scope();
+    println!("Hash used {constraints} constraints");
+});
+```
+
+Source: `circuit/environment/src/environment.rs:60-62`, `circuit/environment/src/environment.rs:154-163`
+
+## Resource Limits
+
+Set limits on circuit size:
+
+```rust
+impl<E: Environment> E {
+    /// Sets the variable limit for the circuit.
+    fn set_variable_limit(limit: Option<u64>);
+    
+    /// Returns the variable limit for the circuit, if one exists.
+    fn get_variable_limit() -> Option<u64>;
+    
+    /// Sets the constraint limit for the circuit.
+    fn set_constraint_limit(limit: Option<u64>);
+    
+    /// Returns the constraint limit for the circuit, if one exists.
+    fn get_constraint_limit() -> Option<u64>;
+}
+```
+
+Source: `circuit/environment/src/environment.rs:165-175`
+
+## Example: Circuit Synthesis
+
+```rust
+use snarkvm_circuit::prelude::*;
+
+// Define a simple circuit
+fn verify_hash<A: Aleo>(input: Field<A>, expected: Field<A>) {
+    // Compute hash (generates constraints)
+    let hash = Poseidon4::<A>::hash(&[input]);
+    
+    // Assert equality (adds 1 constraint)
+    A::assert_eq(hash, expected);
+}
+
+// Synthesize the circuit
+Circuit::scope("hash_verification", || {
+    let input = Field::<Circuit>::new(Mode::Private, console::Field::from(42u64));
+    let expected = Field::<Circuit>::new(Mode::Public, console::Field::from(123u64));
+    
+    verify_hash(input, expected);
+    
+    // Get final counts
+    let (constants, public, private, constraints, nonzeros) = Circuit::count();
+    println!("Total constraints: {constraints}");
+    
+    // Extract R1CS for proving
+    let r1cs = Circuit::eject_r1cs_and_reset();
+});
+```
+
+## Best Practices
+
+1. **Always test constraint counts** - Use `assert_scope!` to verify expected resource usage
+2. **Minimize constraint generation** - Prefer constant operations when possible
+3. **Keep console/circuit synchronized** - Same structure, same API, same tests
+4. **Use scopes for organization** - Track resource usage per component
+5. **Test satisfaction** - Use `is_satisfied()` to verify constraint correctness
+
+## See Also
+
+- [Circuit Types](/api/circuit/types) - Field, Boolean, Integer, Group, Scalar types
+- [Circuit Environment](/api/circuit/environment) - Environment trait and witness management
+- [Circuit Program](/api/circuit/program) - Request, Response, and program execution types
+- [Console API](/api/console/overview) - Primitive types that circuits mirror

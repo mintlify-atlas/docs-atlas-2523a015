@@ -1,0 +1,542 @@
+---
+title: 'SNARK Implementations'
+description: 'Varuna zkSNARK proof system with Algebraic Holographic Proofs'
+---
+
+## Overview
+
+The `snark` module implements zero-knowledge Succinct Non-interactive Arguments of Knowledge (zkSNARKs). The primary implementation is **Varuna**, a universal preprocessing zkSNARK that supports batch proving and verification.
+
+## Varuna zkSNARK
+
+### VarunaSNARK Struct
+
+The main Varuna proof system implementation.
+
+```rust
+pub struct VarunaSNARK<E: PairingEngine, FS: AlgebraicSponge<E::Fq, 2>, SM: SNARKMode>(
+    PhantomData<(E, FS, SM)>,
+);
+```
+
+<ParamField path="E" type="PairingEngine">
+  The pairing-friendly elliptic curve (typically BLS12-377)
+</ParamField>
+
+<ParamField path="FS" type="AlgebraicSponge">
+  The Fiat-Shamir sponge (typically PoseidonSponge)
+</ParamField>
+
+<ParamField path="SM" type="SNARKMode">
+  The SNARK mode (Recursive or Default)
+</ParamField>
+
+### Type Aliases
+
+```rust
+type Varuna = VarunaSNARK<Bls12_377, PoseidonSponge<Fq, 2, 1>, DefaultMode>;
+type RecursiveVaruna = VarunaSNARK<Bls12_377, PoseidonSponge<Fq, 2, 1>, RecursiveMode>;
+```
+
+## SNARK Trait Implementation
+
+Varuna implements the `SNARK` trait, providing the full proof system interface.
+
+### Associated Types
+
+```rust
+impl<E, FS, SM> SNARK for VarunaSNARK<E, FS, SM> {
+    type ScalarField = E::Fr;
+    type BaseField = E::Fq;
+    type Certificate = Certificate<E>;
+    type Proof = Proof<E>;
+    type ProvingKey = CircuitProvingKey<E, SM>;
+    type VerifyingKey = CircuitVerifyingKey<E>;
+    type UniversalSRS = UniversalParams<E>;
+    type UniversalProver = UniversalProver<E>;
+    type UniversalVerifier = UniversalVerifier<E>;
+    type VerifierInput = [E::Fr];
+    type FiatShamirRng = FS;
+}
+```
+
+## Setup Phase
+
+### universal_setup
+
+Generates universal structured reference string (SRS).
+
+```rust
+pub fn universal_setup(max_degree: usize) -> Result<UniversalSRS<E>>
+```
+
+<ParamField path="max_degree" type="usize">
+  Maximum polynomial degree supported by the SRS
+</ParamField>
+
+<ResponseField name="return" type="Result<UniversalSRS<E>>">
+  Universal parameters supporting all circuits up to max_degree
+</ResponseField>
+
+**Note:** In production, the SRS is loaded from trusted setup parameters, not generated.
+
+**Example:**
+
+```rust
+use snarkvm_algorithms::snark::varuna::VarunaSNARK;
+use snarkvm_curves::bls12_377::Bls12_377;
+
+type Varuna = VarunaSNARK<Bls12_377, PoseidonSponge<Fq, 2, 1>, DefaultMode>;
+
+// Load SRS (in practice, from trusted setup)
+let max_degree = 1 << 20; // Support circuits up to 2^20 constraints
+let srs = Varuna::universal_setup(max_degree)?;
+```
+
+### circuit_setup
+
+Generates circuit-specific proving and verifying keys.
+
+```rust
+pub fn circuit_setup<C: ConstraintSynthesizer<E::Fr>>(
+    srs: &UniversalSRS<E>,
+    circuit: &C,
+) -> Result<(CircuitProvingKey<E, SM>, CircuitVerifyingKey<E>)>
+```
+
+<ParamField path="srs" type="&UniversalSRS<E>">
+  Universal structured reference string
+</ParamField>
+
+<ParamField path="circuit" type="&C">
+  The circuit to generate keys for
+</ParamField>
+
+<ResponseField name="return" type="Result<(CircuitProvingKey, CircuitVerifyingKey)>">
+  Proving key for the prover and verifying key for the verifier
+</ResponseField>
+
+**Example:**
+
+```rust
+// Define a circuit
+struct MyCircuit { /* ... */ }
+impl ConstraintSynthesizer<Fr> for MyCircuit { /* ... */ }
+
+let circuit = MyCircuit::new();
+let (proving_key, verifying_key) = Varuna::circuit_setup(&srs, &circuit)?;
+```
+
+### batch_circuit_setup
+
+Generates keys for multiple circuits simultaneously.
+
+```rust
+pub fn batch_circuit_setup<C: ConstraintSynthesizer<E::Fr>>(
+    universal_srs: &UniversalSRS<E>,
+    circuits: &[&C],
+) -> Result<Vec<(CircuitProvingKey<E, SM>, CircuitVerifyingKey<E>)>>
+```
+
+<ParamField path="circuits" type="&[&C]">
+  Slice of circuits to generate keys for
+</ParamField>
+
+<ResponseField name="return" type="Result<Vec<(ProvingKey, VerifyingKey)>>">
+  Vector of proving and verifying key pairs
+</ResponseField>
+
+## Proving Phase
+
+### prove
+
+Generates a zero-knowledge proof for a single circuit.
+
+```rust
+pub fn prove<C: ConstraintSynthesizer<E::Fr>, R: Rng + CryptoRng>(
+    universal_prover: &UniversalProver<E>,
+    fs_parameters: &FS::Parameters,
+    proving_key: &CircuitProvingKey<E, SM>,
+    varuna_version: VarunaVersion,
+    constraints: &C,
+    rng: &mut R,
+) -> Result<Proof<E>>
+```
+
+<ParamField path="universal_prover" type="&UniversalProver<E>">
+  Universal prover parameters
+</ParamField>
+
+<ParamField path="fs_parameters" type="&FS::Parameters">
+  Fiat-Shamir sponge parameters
+</ParamField>
+
+<ParamField path="proving_key" type="&CircuitProvingKey<E, SM>">
+  Circuit-specific proving key
+</ParamField>
+
+<ParamField path="varuna_version" type="VarunaVersion">
+  Protocol version (V1 or V2)
+</ParamField>
+
+<ParamField path="constraints" type="&C">
+  The circuit constraints to prove
+</ParamField>
+
+<ParamField path="rng" type="&mut R">
+  Cryptographically secure random number generator
+</ParamField>
+
+<ResponseField name="return" type="Result<Proof<E>>">
+  Zero-knowledge proof
+</ResponseField>
+
+**Example:**
+
+```rust
+use snarkvm_utilities::rand::TestRng;
+
+let mut rng = TestRng::default();
+let universal_prover = srs.to_universal_prover()?;
+let fs_params = FS::sample_parameters();
+
+let circuit = MyCircuit { /* ... */ };
+let proof = Varuna::prove(
+    &universal_prover,
+    &fs_params,
+    &proving_key,
+    VarunaVersion::V2,
+    &circuit,
+    &mut rng,
+)?;
+```
+
+### prove_batch
+
+Generates a batch proof for multiple circuit instances.
+
+```rust
+pub fn prove_batch<C: ConstraintSynthesizer<E::Fr>, R: Rng + CryptoRng>(
+    universal_prover: &UniversalProver<E>,
+    fs_parameters: &FS::Parameters,
+    varuna_version: VarunaVersion,
+    keys_to_constraints: &BTreeMap<&CircuitProvingKey<E, SM>, &[C]>,
+    rng: &mut R,
+) -> Result<Proof<E>>
+```
+
+<ParamField path="keys_to_constraints" type="&BTreeMap<&ProvingKey, &[C]>">
+  Map from proving keys to constraint instances
+</ParamField>
+
+<ResponseField name="return" type="Result<Proof<E>>">
+  Batch proof covering all instances
+</ResponseField>
+
+**Example:**
+
+```rust
+use std::collections::BTreeMap;
+
+let mut keys_to_constraints = BTreeMap::new();
+keys_to_constraints.insert(&proving_key, &circuits[..]);
+
+let batch_proof = Varuna::prove_batch(
+    &universal_prover,
+    &fs_params,
+    VarunaVersion::V2,
+    &keys_to_constraints,
+    &mut rng,
+)?;
+```
+
+## Verification Phase
+
+### verify
+
+Verifies a zero-knowledge proof.
+
+```rust
+pub fn verify<B: Borrow<[E::Fr]>>(
+    universal_verifier: &UniversalVerifier<E>,
+    fs_parameters: &FS::Parameters,
+    verifying_key: &CircuitVerifyingKey<E>,
+    varuna_version: VarunaVersion,
+    input: B,
+    proof: &Proof<E>,
+) -> Result<bool>
+```
+
+<ParamField path="universal_verifier" type="&UniversalVerifier<E>">
+  Universal verifier parameters
+</ParamField>
+
+<ParamField path="verifying_key" type="&CircuitVerifyingKey<E>">
+  Circuit-specific verifying key
+</ParamField>
+
+<ParamField path="input" type="B">
+  Public input to the circuit
+</ParamField>
+
+<ParamField path="proof" type="&Proof<E>">
+  The proof to verify
+</ParamField>
+
+<ResponseField name="return" type="Result<bool>">
+  True if the proof is valid, false otherwise
+</ResponseField>
+
+**Example:**
+
+```rust
+let universal_verifier = srs.to_universal_verifier()?;
+let public_input = vec![Fr::from(42u64)];
+
+let is_valid = Varuna::verify(
+    &universal_verifier,
+    &fs_params,
+    &verifying_key,
+    VarunaVersion::V2,
+    &public_input,
+    &proof,
+)?;
+
+assert!(is_valid);
+```
+
+### verify_batch
+
+Verifies a batch proof covering multiple instances.
+
+```rust
+pub fn verify_batch<B: Borrow<[E::Fr]>>(
+    universal_verifier: &UniversalVerifier<E>,
+    fs_parameters: &FS::Parameters,
+    varuna_version: VarunaVersion,
+    keys_to_inputs: &BTreeMap<&CircuitVerifyingKey<E>, &[B]>,
+    proof: &Proof<E>,
+) -> Result<bool>
+```
+
+<ParamField path="keys_to_inputs" type="&BTreeMap<&VerifyingKey, &[B]>">
+  Map from verifying keys to public inputs
+</ParamField>
+
+<ResponseField name="return" type="Result<bool>">
+  True if the batch proof is valid
+</ResponseField>
+
+## Key Structures
+
+### CircuitProvingKey
+
+Contains all information needed to generate proofs.
+
+```rust
+pub struct CircuitProvingKey<E: PairingEngine, SM: SNARKMode> {
+    pub circuit_commitment: Commitment<E>,
+    pub circuit: Circuit<E::Fr, SM>,
+    pub committer_key: CommitterKey<E>,
+    pub circuit_id: CircuitId,
+}
+```
+
+### CircuitVerifyingKey
+
+Contains information needed to verify proofs.
+
+```rust
+pub struct CircuitVerifyingKey<E: PairingEngine> {
+    pub circuit_commitment: Commitment<E>,
+    pub circuit_info: CircuitInfo,
+    pub circuit_id: CircuitId,
+}
+```
+
+### Proof
+
+The zero-knowledge proof structure.
+
+```rust
+pub struct Proof<E: PairingEngine> {
+    pub commitments: Vec<Vec<LabeledCommitment<Commitment<E>>>>,
+    pub evaluations: Vec<Vec<E::Fr>>,
+    pub batch_proof: BatchProof<E>,
+    pub transcript: Vec<u8>,
+}
+```
+
+### Certificate
+
+Proof that indexing was performed correctly.
+
+```rust
+pub struct Certificate<E: PairingEngine> {
+    pub matrix_commitments: Vec<Vec<Commitment<E>>>,
+    pub w_circ_commitment: Commitment<E>,
+}
+```
+
+## Algebraic Holographic Proof (AHP)
+
+### AHPForR1CS
+
+The AHP compiler that reduces R1CS to polynomial protocols.
+
+```rust
+pub struct AHPForR1CS<F: PrimeField, SM: SNARKMode> {
+    // Internal AHP state
+}
+```
+
+### Key Methods
+
+#### index
+
+Indexes a circuit for proving.
+
+```rust
+pub fn index<C: ConstraintSynthesizer<F>>(circuit: &C) -> Result<IndexedCircuit<F, SM>>
+```
+
+#### prover_rounds
+
+Executes prover rounds of the AHP protocol.
+
+```rust
+pub fn prover_rounds<C: ConstraintSynthesizer<F>>(
+    circuit: &IndexedCircuit<F, SM>,
+    constraints: &C,
+    fs_rng: &mut FS,
+) -> Result<ProverState<F, SM>>
+```
+
+#### verifier_rounds
+
+Executes verifier rounds of the AHP protocol.
+
+```rust
+pub fn verifier_rounds(
+    circuit_info: &CircuitInfo,
+    public_input: &[F],
+    fs_rng: &mut FS,
+) -> Result<VerifierState<F>>
+```
+
+## Protocol Versions
+
+### VarunaVersion Enum
+
+```rust
+pub enum VarunaVersion {
+    V1,
+    V2,
+}
+```
+
+- **V1**: Original Varuna protocol
+- **V2**: Optimized version with improved batch verification
+
+## SNARKMode Trait
+
+### DefaultMode
+
+Standard proving mode.
+
+```rust
+pub struct DefaultMode;
+impl SNARKMode for DefaultMode { /* ... */ }
+```
+
+### RecursiveMode
+
+Mode optimized for recursive proof composition.
+
+```rust
+pub struct RecursiveMode;
+impl SNARKMode for RecursiveMode { /* ... */ }
+```
+
+## Complete Example
+
+```rust
+use snarkvm_algorithms::{
+    crypto_hash::PoseidonSponge,
+    snark::varuna::{VarunaSNARK, VarunaVersion, DefaultMode},
+    r1cs::ConstraintSynthesizer,
+};
+use snarkvm_curves::bls12_377::{Bls12_377, Fq, Fr};
+use snarkvm_utilities::rand::TestRng;
+
+type Varuna = VarunaSNARK<Bls12_377, PoseidonSponge<Fq, 2, 1>, DefaultMode>;
+type FS = PoseidonSponge<Fq, 2, 1>;
+
+// Define circuit
+struct MyCircuit {
+    a: Option<Fr>,
+    b: Option<Fr>,
+}
+
+impl ConstraintSynthesizer<Fr> for MyCircuit {
+    fn generate_constraints(&self, cs: &mut impl ConstraintSystem<Fr>) -> Result<()> {
+        // Add constraints: a * b = c
+        // ...
+        Ok(())
+    }
+}
+
+fn main() -> Result<()> {
+    let mut rng = TestRng::default();
+    
+    // Setup phase
+    let max_degree = 1 << 16;
+    let srs = Varuna::universal_setup(max_degree)?;
+    let circuit = MyCircuit { a: None, b: None };
+    let (pk, vk) = Varuna::circuit_setup(&srs, &circuit)?;
+    
+    // Proving phase
+    let universal_prover = srs.to_universal_prover()?;
+    let fs_params = FS::sample_parameters();
+    let circuit = MyCircuit {
+        a: Some(Fr::from(3u64)),
+        b: Some(Fr::from(4u64)),
+    };
+    let proof = Varuna::prove(
+        &universal_prover,
+        &fs_params,
+        &pk,
+        VarunaVersion::V2,
+        &circuit,
+        &mut rng,
+    )?;
+    
+    // Verification phase
+    let universal_verifier = srs.to_universal_verifier()?;
+    let public_input = vec![Fr::from(12u64)]; // c = a * b
+    let is_valid = Varuna::verify(
+        &universal_verifier,
+        &fs_params,
+        &vk,
+        VarunaVersion::V2,
+        &public_input,
+        &proof,
+    )?;
+    
+    assert!(is_valid);
+    Ok(())
+}
+```
+
+## Performance Considerations
+
+- **Batch proving** amortizes costs across multiple circuit instances
+- **Parallel prover** utilizes all available CPU cores
+- **Lazy evaluation** defers expensive computations until needed
+- **Memory efficiency** uses streaming where possible
+
+## See Also
+
+- [Cryptographic Hash Functions](/api/algorithms/crypto-hash) - Fiat-Shamir transformation
+- [Polynomial Commitments](/api/algorithms/polycommit) - Commitment scheme
+- [FFT Operations](/api/algorithms/fft) - Polynomial arithmetic

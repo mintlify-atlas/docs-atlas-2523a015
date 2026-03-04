@@ -1,0 +1,418 @@
+---
+title: Query Trait and Operations
+description: Query interface for blockchain state access
+---
+
+The `QueryTrait` provides a standardized interface for querying blockchain state. It's used throughout SnarkVM to enable both synchronous and asynchronous state access.
+
+## QueryTrait Interface
+
+The query trait defines methods for accessing current state and historical data.
+
+```rust
+pub trait QueryTrait<N: Network> {
+    fn current_state_root(&self) -> Result<N::StateRoot>;
+    
+    fn get_state_path_for_commitment(
+        &self,
+        commitment: &Field<N>
+    ) -> Result<StatePath<N>>;
+    
+    fn get_state_paths_for_commitments(
+        &self,
+        commitments: &[Field<N>]
+    ) -> Result<Vec<StatePath<N>>>;
+    
+    fn current_block_height(&self) -> Result<u32>;
+}
+```
+
+### Async Variant
+
+When the `async` feature is enabled, async methods are also available:
+
+```rust
+#[cfg(feature = "async")]
+#[async_trait::async_trait(?Send)]
+pub trait QueryTrait<N: Network> {
+    async fn current_state_root_async(&self) -> Result<N::StateRoot>;
+    
+    async fn get_state_path_for_commitment_async(
+        &self,
+        commitment: &Field<N>
+    ) -> Result<StatePath<N>>;
+    
+    async fn get_state_paths_for_commitments_async(
+        &self,
+        commitments: &[Field<N>]
+    ) -> Result<Vec<StatePath<N>>>;
+    
+    async fn current_block_height_async(&self) -> Result<u32>;
+}
+```
+
+## Query Methods
+
+### Current State Root
+
+Returns the current state root of the blockchain.
+
+```rust
+fn current_state_root(&self) -> Result<N::StateRoot>
+```
+
+The state root is a Merkle root that commits to the entire blockchain state at the current block height. It's used in SNARKs to prove statements about on-chain data.
+
+**Example:**
+
+```rust
+use snarkvm_ledger::query::QueryTrait;
+
+let state_root = ledger.current_state_root()?;
+println!("Current state root: {}", state_root);
+```
+
+### State Path for Commitment
+
+Returns a Merkle path proving a commitment is included in the state.
+
+```rust
+fn get_state_path_for_commitment(
+    &self,
+    commitment: &Field<N>
+) -> Result<StatePath<N>>
+```
+
+**Parameters:**
+- `commitment` - The record commitment to prove
+
+**Returns:**
+- `StatePath<N>` - Merkle path from commitment to state root
+
+**Use cases:**
+- Proving record ownership in SNARKs
+- Verifying a record exists on-chain
+- Generating inclusion proofs for light clients
+
+**Example:**
+
+```rust
+// Get a commitment from a transaction output
+let commitment = transaction.commitments().next().unwrap();
+
+// Get the state path
+let state_path = ledger.get_state_path_for_commitment(commitment)?;
+
+// Verify the path
+let state_root = ledger.current_state_root()?;
+assert!(state_path.verify(&state_root, commitment));
+```
+
+### State Paths for Multiple Commitments
+
+Returns Merkle paths for multiple commitments in a single query.
+
+```rust
+fn get_state_paths_for_commitments(
+    &self,
+    commitments: &[Field<N>]
+) -> Result<Vec<StatePath<N>>>
+```
+
+**Parameters:**
+- `commitments` - Slice of commitments to prove
+
+**Returns:**
+- `Vec<StatePath<N>>` - State paths in the same order as inputs
+
+**Performance:**
+This method is more efficient than calling `get_state_path_for_commitment` repeatedly, as it can batch database lookups.
+
+**Example:**
+
+```rust
+// Collect commitments from multiple transactions
+let commitments: Vec<_> = transactions
+    .iter()
+    .flat_map(|tx| tx.commitments())
+    .cloned()
+    .collect();
+
+// Get all state paths in one call
+let state_paths = ledger.get_state_paths_for_commitments(&commitments)?;
+
+assert_eq!(state_paths.len(), commitments.len());
+```
+
+### Current Block Height
+
+Returns the height of the latest block in the ledger.
+
+```rust
+fn current_block_height(&self) -> Result<u32>
+```
+
+**Returns:**
+- `u32` - The current block height (genesis is 0)
+
+**Example:**
+
+```rust
+let height = ledger.current_block_height()?;
+println!("Current block height: {}", height);
+```
+
+## StatePath
+
+A `StatePath` is a Merkle path proving a commitment is included in the blockchain state.
+
+```rust
+pub struct StatePath<N: Network> {
+    global_state_root: N::StateRoot,
+    path: Vec<(Field<N>, Field<N>)>,
+}
+```
+
+### Verification
+
+```rust
+impl<N: Network> StatePath<N> {
+    pub fn verify(
+        &self,
+        state_root: &N::StateRoot,
+        commitment: &Field<N>,
+    ) -> bool
+}
+```
+
+**Example:**
+
+```rust
+// Get state path
+let state_path = ledger.get_state_path_for_commitment(&commitment)?;
+let state_root = ledger.current_state_root()?;
+
+// Verify the path
+if state_path.verify(&state_root, &commitment) {
+    println!("Commitment is in the blockchain state");
+} else {
+    println!("Invalid state path");
+}
+```
+
+## Implementing QueryTrait
+
+You can implement `QueryTrait` for custom types to enable querying.
+
+### Example: Ledger Implementation
+
+```rust
+impl<N: Network, C: ConsensusStorage<N>> QueryTrait<N> for Ledger<N, C> {
+    fn current_state_root(&self) -> Result<N::StateRoot> {
+        Ok(self.latest_state_root())
+    }
+    
+    fn get_state_path_for_commitment(
+        &self,
+        commitment: &Field<N>
+    ) -> Result<StatePath<N>> {
+        self.vm.block_store().get_state_path_for_commitment(commitment)
+    }
+    
+    fn get_state_paths_for_commitments(
+        &self,
+        commitments: &[Field<N>]
+    ) -> Result<Vec<StatePath<N>>> {
+        self.vm.block_store().get_state_paths_for_commitments(commitments)
+    }
+    
+    fn current_block_height(&self) -> Result<u32> {
+        Ok(self.latest_height())
+    }
+}
+```
+
+### Example: BlockStore Implementation
+
+```rust
+impl<N: Network, B: BlockStorage<N>> QueryTrait<N> for BlockStore<N, B> {
+    fn current_state_root(&self) -> Result<N::StateRoot> {
+        Ok(self.current_state_root())
+    }
+    
+    fn get_state_path_for_commitment(
+        &self,
+        commitment: &Field<N>
+    ) -> Result<StatePath<N>> {
+        self.get_state_path_for_commitment(commitment)
+    }
+    
+    fn get_state_paths_for_commitments(
+        &self,
+        commitments: &[Field<N>]
+    ) -> Result<Vec<StatePath<N>>> {
+        self.get_state_paths_for_commitments(commitments)
+    }
+    
+    fn current_block_height(&self) -> Result<u32> {
+        Ok(self.current_block_height())
+    }
+}
+```
+
+## Query Wrapper
+
+For testing and development, the `Query` type wraps a `BlockStore` to implement `QueryTrait`.
+
+```rust
+use snarkvm_ledger::query::Query;
+use snarkvm_ledger::store::BlockStore;
+
+let block_store = BlockStore::open(storage)?;
+let query = Query::from(block_store);
+
+// Now you can use query methods
+let state_root = query.current_state_root()?;
+let height = query.current_block_height()?;
+```
+
+## Usage in Transaction Creation
+
+The `QueryTrait` is commonly used when creating transactions to provide state access to the VM.
+
+```rust
+use snarkvm_ledger::prelude::*;
+
+// Create a transfer transaction
+let transaction = ledger.create_transfer(
+    &private_key,
+    recipient,
+    amount,
+    fee,
+    Some(&ledger as &dyn QueryTrait<N>), // Pass query interface
+    &mut rng,
+)?;
+```
+
+The VM uses the query interface to:
+- Get state paths for input records
+- Verify records are unspent
+- Access the current block height for transaction validation
+
+## Async Query Operations
+
+When the `async` feature is enabled, you can use async query methods:
+
+```rust
+#[cfg(feature = "async")]
+use snarkvm_ledger::query::QueryTrait;
+
+// Async state root query
+let state_root = ledger.current_state_root_async().await?;
+
+// Async state path query
+let state_path = ledger
+    .get_state_path_for_commitment_async(&commitment)
+    .await?;
+
+// Async batch query
+let state_paths = ledger
+    .get_state_paths_for_commitments_async(&commitments)
+    .await?;
+
+// Async block height
+let height = ledger.current_block_height_async().await?;
+```
+
+## Example: Complete Query Workflow
+
+```rust
+use snarkvm_ledger::prelude::*;
+use snarkvm_ledger::query::QueryTrait;
+
+// Setup
+let ledger = Ledger::load(genesis, storage_mode)?;
+
+// Get current state
+let state_root = ledger.current_state_root()?;
+let height = ledger.current_block_height()?;
+
+println!("Current state at height {}", height);
+println!("State root: {}", state_root);
+
+// Get a block
+let block = ledger.get_block(height)?;
+
+// Extract commitments
+let commitments: Vec<_> = block.commitments().cloned().collect();
+
+if !commitments.is_empty() {
+    // Get state paths for all commitments
+    let state_paths = ledger.get_state_paths_for_commitments(&commitments)?;
+    
+    // Verify each path
+    for (commitment, state_path) in commitments.iter().zip(state_paths.iter()) {
+        if state_path.verify(&state_root, commitment) {
+            println!("✓ Verified commitment: {}", commitment);
+        } else {
+            println!("✗ Failed to verify commitment: {}", commitment);
+        }
+    }
+}
+```
+
+## Performance Tips
+
+### Batch Queries
+
+Always use batch query methods when querying multiple items:
+
+```rust
+// Bad: O(n) database queries
+let mut state_paths = Vec::new();
+for commitment in commitments {
+    state_paths.push(ledger.get_state_path_for_commitment(commitment)?);
+}
+
+// Good: O(1) or O(log n) database queries
+let state_paths = ledger.get_state_paths_for_commitments(&commitments)?;
+```
+
+### Cache Current State
+
+If you need the state root or height multiple times, cache it:
+
+```rust
+// Cache current state
+let state_root = ledger.current_state_root()?;
+let height = ledger.current_block_height()?;
+
+// Use cached values
+for commitment in commitments {
+    let state_path = ledger.get_state_path_for_commitment(commitment)?;
+    assert!(state_path.verify(&state_root, commitment));
+}
+```
+
+### Use Async for I/O-Bound Operations
+
+If performing many queries, async methods can improve throughput:
+
+```rust
+#[cfg(feature = "async")]
+use futures::future::join_all;
+
+// Query multiple commitments concurrently
+let futures: Vec<_> = commitments
+    .iter()
+    .map(|c| ledger.get_state_path_for_commitment_async(c))
+    .collect();
+
+let state_paths = join_all(futures).await;
+```
+
+## Next Steps
+
+- [Ledger Overview](/api/ledger/overview) - Main ledger operations
+- [Block Types](/api/ledger/block) - Block and transaction structures
+- [Storage](/api/ledger/store) - Persistent storage layer

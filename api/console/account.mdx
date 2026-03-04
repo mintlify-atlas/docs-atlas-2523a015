@@ -1,0 +1,353 @@
+---
+title: Account Types
+description: Account management types including private keys, view keys, compute keys, addresses, and signatures
+---
+
+The `account` module provides cryptographic account types for the Aleo blockchain. All account types are generic over a `Network` parameter.
+
+## PrivateKey
+
+The root secret for an Aleo account, derived from a random seed.
+
+### Structure
+
+```rust
+pub struct PrivateKey<N: Network> {
+    seed: Field<N>,
+    sk_sig: Scalar<N>,
+    r_sig: Scalar<N>,
+}
+```
+
+<ParamField path="seed" type="Field<N>">
+  The account seed that derives the full private key
+</ParamField>
+
+<ParamField path="sk_sig" type="Scalar<N>">
+  The derived signature secret key
+</ParamField>
+
+<ParamField path="r_sig" type="Scalar<N>">
+  The derived signature randomizer
+</ParamField>
+
+### Methods
+
+<ResponseField name="new" type="fn new<R: Rng + CryptoRng>(rng: &mut R) -> Result<Self>">
+  Samples a new random private key
+</ResponseField>
+
+<ResponseField name="seed" type="fn seed(&self) -> Field<N>">
+  Returns the account seed
+</ResponseField>
+
+<ResponseField name="sk_sig" type="fn sk_sig(&self) -> Scalar<N>">
+  Returns the signature secret key
+</ResponseField>
+
+<ResponseField name="r_sig" type="fn r_sig(&self) -> Scalar<N>">
+  Returns the signature randomizer
+</ResponseField>
+
+<ResponseField name="sign_bits" type="fn sign_bits<R: Rng + CryptoRng>(&self, message: &[bool], rng: &mut R) -> Result<Signature<N>>">
+  Signs a message represented as bits
+</ResponseField>
+
+### Example
+
+```rust
+use snarkvm_console::account::PrivateKey;
+use snarkvm_console::network::MainnetV0;
+
+type CurrentNetwork = MainnetV0;
+
+// Generate a new private key
+let private_key = PrivateKey::<CurrentNetwork>::new(&mut rng)?;
+
+// Access components
+let seed = private_key.seed();
+let sk_sig = private_key.sk_sig();
+let r_sig = private_key.r_sig();
+
+// Sign a message
+let message = "Hello, Aleo!".as_bytes().to_bits_le();
+let signature = private_key.sign_bits(&message, &mut rng)?;
+```
+
+### Serialization
+
+Private keys are serialized in Bech32 format with prefix `APrivateKey1`:
+
+```
+APrivateKey1zkp8cC4jgHEBnbtu3xxs1Ndja2EMizcvTRDq5Nikdkukg1p
+```
+
+## ViewKey
+
+The account view key used to decrypt records and ciphertext.
+
+### Structure
+
+```rust
+pub struct ViewKey<N: Network>(Scalar<N>);
+```
+
+<ParamField path="inner" type="Scalar<N>">
+  The view key scalar value
+</ParamField>
+
+### Methods
+
+<ResponseField name="from_scalar" type="fn from_scalar(view_key: Scalar<N>) -> Self">
+  Initializes the account view key from a scalar
+</ResponseField>
+
+### Derivation
+
+The view key is derived from a private key:
+
+```rust
+let private_key = PrivateKey::<CurrentNetwork>::new(&mut rng)?;
+let view_key = ViewKey::try_from(&private_key)?;
+```
+
+### Serialization
+
+View keys use Bech32 format with prefix `AViewKey1`:
+
+```
+AViewKey1n1n3ZbnVEtXVe3La2xWkUvY3EY7XaCG6RZJJ3tbvrrrD
+```
+
+## ComputeKey
+
+The compute key used for program execution and record encryption.
+
+### Structure
+
+```rust
+pub struct ComputeKey<N: Network> {
+    pk_sig: Group<N>,
+    pr_sig: Group<N>,
+    sk_prf: Scalar<N>,
+}
+```
+
+<ParamField path="pk_sig" type="Group<N>">
+  The signature public key (G^sk_sig)
+</ParamField>
+
+<ParamField path="pr_sig" type="Group<N>">
+  The signature public randomizer (G^r_sig)
+</ParamField>
+
+<ParamField path="sk_prf" type="Scalar<N>">
+  The PRF secret key derived from pk_sig and pr_sig
+</ParamField>
+
+### Methods
+
+<ResponseField name="pk_sig" type="fn pk_sig(&self) -> Group<N>">
+  Returns the signature public key
+</ResponseField>
+
+<ResponseField name="pr_sig" type="fn pr_sig(&self) -> Group<N>">
+  Returns the signature public randomizer
+</ResponseField>
+
+<ResponseField name="sk_prf" type="fn sk_prf(&self) -> Scalar<N>">
+  Returns the PRF secret key
+</ResponseField>
+
+<ResponseField name="to_address" type="fn to_address(&self) -> Address<N>">
+  Derives the address from this compute key
+</ResponseField>
+
+### Example
+
+```rust
+let private_key = PrivateKey::<CurrentNetwork>::new(&mut rng)?;
+let compute_key = ComputeKey::try_from(&private_key)?;
+let address = compute_key.to_address();
+```
+
+### Serialization
+
+Compute keys use Bech32 format with prefix `AComputeKey1`.
+
+## Address
+
+The unique ID of an Aleo account, derived from its view key.
+
+### Structure
+
+```rust
+pub struct Address<N: Network> {
+    address: Group<N>,
+}
+```
+
+<ParamField path="address" type="Group<N>">
+  The underlying group element representing the address
+</ParamField>
+
+### Methods
+
+<ResponseField name="new" type="fn new(group: Group<N>) -> Self">
+  Initializes an address from a group element
+</ResponseField>
+
+<ResponseField name="zero" type="fn zero() -> Self">
+  Initializes a zero address (for testing)
+</ResponseField>
+
+### Derivation
+
+Addresses are derived from private keys, view keys, or compute keys:
+
+```rust
+let private_key = PrivateKey::<CurrentNetwork>::new(&mut rng)?;
+let address = Address::try_from(&private_key)?;
+
+// Or from a view key
+let view_key = ViewKey::try_from(&private_key)?;
+let address = Address::try_from(&view_key)?;
+
+// Or from a compute key
+let compute_key = ComputeKey::try_from(&private_key)?;
+let address = compute_key.to_address();
+```
+
+### Serialization
+
+Addresses use Bech32 format with prefix `aleo1`:
+
+```
+aleo1wvgwnqvy46qq0zemj0k6sfp3zv0mp77rw97khvwuhac05yuwscxqmfyhwf
+```
+
+## Signature
+
+A digital signature proving knowledge of a private key.
+
+### Structure
+
+```rust
+pub struct Signature<N: Network> {
+    challenge: Scalar<N>,
+    response: Scalar<N>,
+    compute_key: ComputeKey<N>,
+}
+```
+
+<ParamField path="challenge" type="Scalar<N>">
+  The verifier challenge to check against
+</ParamField>
+
+<ParamField path="response" type="Scalar<N>">
+  The prover response to the challenge
+</ParamField>
+
+<ParamField path="compute_key" type="ComputeKey<N>">
+  The compute key of the prover
+</ParamField>
+
+### Methods
+
+<ResponseField name="sign" type="fn sign<R: Rng>(private_key: &PrivateKey<N>, message: &[Field<N>], rng: &mut R) -> Result<Self>">
+  Signs a message with a private key
+</ResponseField>
+
+<ResponseField name="verify" type="fn verify(&self, address: &Address<N>, message: &[Field<N>]) -> bool">
+  Verifies the signature against an address and message
+</ResponseField>
+
+<ResponseField name="verify_bits" type="fn verify_bits(&self, address: &Address<N>, message: &[bool]) -> bool">
+  Verifies the signature against an address and message in bit representation
+</ResponseField>
+
+<ResponseField name="challenge" type="fn challenge(&self) -> Scalar<N>">
+  Returns the verifier challenge
+</ResponseField>
+
+<ResponseField name="response" type="fn response(&self) -> Scalar<N>">
+  Returns the prover response
+</ResponseField>
+
+<ResponseField name="compute_key" type="fn compute_key(&self) -> ComputeKey<N>">
+  Returns the signer compute key
+</ResponseField>
+
+<ResponseField name="to_address" type="fn to_address(&self) -> Address<N>">
+  Returns the signer address
+</ResponseField>
+
+### Example
+
+```rust
+use snarkvm_console::account::{PrivateKey, Address, Signature};
+use snarkvm_console::types::Field;
+use snarkvm_console::network::MainnetV0;
+
+type CurrentNetwork = MainnetV0;
+
+// Generate key and address
+let private_key = PrivateKey::<CurrentNetwork>::new(&mut rng)?;
+let address = Address::try_from(&private_key)?;
+
+// Sign a message
+let message: Vec<Field<CurrentNetwork>> = vec![
+    Field::from_u64(1),
+    Field::from_u64(2),
+    Field::from_u64(3),
+];
+let signature = Signature::sign(&private_key, &message, &mut rng)?;
+
+// Verify the signature
+assert!(signature.verify(&address, &message));
+
+// Verify with bits
+let message_bits = "Hello, Aleo!".as_bytes().to_bits_le();
+let signature_bits = private_key.sign_bits(&message_bits, &mut rng)?;
+assert!(signature_bits.verify_bits(&address, &message_bits));
+```
+
+### Serialization
+
+Signatures use Bech32 format with prefix `sign1` (216 characters total).
+
+## Account Derivation Chain
+
+The complete account derivation chain:
+
+```
+PrivateKey (seed: Field<N>)
+    ↓
+    ├─→ ViewKey (Scalar<N>)
+    │       ↓
+    │       └─→ Address (Group<N>)
+    │
+    └─→ ComputeKey (pk_sig, pr_sig, sk_prf)
+            ↓
+            └─→ Address (Group<N>)
+```
+
+All keys derive the same address:
+
+```rust
+let private_key = PrivateKey::<CurrentNetwork>::new(&mut rng)?;
+let view_key = ViewKey::try_from(&private_key)?;
+let compute_key = ComputeKey::try_from(&private_key)?;
+
+let addr1 = Address::try_from(&private_key)?;
+let addr2 = Address::try_from(&view_key)?;
+let addr3 = compute_key.to_address();
+
+assert_eq!(addr1, addr2);
+assert_eq!(addr2, addr3);
+```
+
+## See Also
+
+- [Console Types](/api/console/types) - Primitive types used in accounts
+- [Network Module](/api/console/network) - Network parameters and traits

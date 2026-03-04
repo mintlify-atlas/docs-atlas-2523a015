@@ -1,0 +1,241 @@
+---
+title: CUDA Acceleration
+description: Using CUDA for performance acceleration in SnarkVM
+---
+
+## Overview
+
+SnarkVM provides CUDA acceleration support for computationally intensive cryptographic operations. By leveraging GPU parallelism, you can significantly improve performance for operations like multi-scalar multiplication (MSM), polynomial operations, and number-theoretic transforms (NTT).
+
+## Build Requirements
+
+<Warning>
+  CUDA acceleration requires specific hardware and software prerequisites:
+  - NVIDIA GPU with compute capability `sm_70` or later (Volta, Turing, Ampere, Ada, Hopper architectures)
+  - [CUDA Toolkit](https://docs.nvidia.com/cuda/index.html#installation-guides) with `nvcc` compiler installed
+  - Linux or Windows (with non-MSVC toolchain)
+</Warning>
+
+### Supported GPUs
+
+- **Volta** (compute capability 7.0): Tesla V100, Titan V
+- **Turing** (compute capability 7.5): RTX 20 series, GTX 16 series
+- **Ampere** (compute capability 8.0+): RTX 30 series, A100, A40
+- **Ada Lovelace** (compute capability 8.9): RTX 40 series
+- **Hopper** (compute capability 9.0): H100
+
+## Enabling CUDA Support
+
+### In Your Project
+
+Add SnarkVM with the `cuda` feature to your `Cargo.toml`:
+
+```toml Cargo.toml
+[dependencies]
+snarkvm = { version = "4.4.0", features = ["cuda"] }
+```
+
+### Building from Source
+
+When building SnarkVM with CUDA support:
+
+```bash
+cd snarkvm
+cargo build --release --features cuda
+```
+
+### Running Benchmarks with CUDA
+
+```bash
+cd algorithms
+cargo bench --bench variable_base --features cuda
+```
+
+## CUDA Implementation Details
+
+The CUDA implementation is located in `algorithms/cuda/` and provides accelerated versions of:
+
+### Multi-Scalar Multiplication (MSM)
+
+Computes `Σ(scalar[i] * point[i])` efficiently using GPU parallelism:
+
+```rust
+use snarkvm_algorithms_cuda::msm;
+
+// Accelerate MSM computation on GPU
+let result = msm(&points, &scalars)?;
+```
+
+### Number-Theoretic Transform (NTT)
+
+In-place NTT computation for polynomial operations:
+
+```rust
+use snarkvm_algorithms_cuda::{NTT, NTTInputOutputOrder, NTTDirection, NTTType};
+
+// Perform forward NTT
+NTT(
+    domain_size,
+    &mut data,
+    NTTInputOutputOrder::NN,
+    NTTDirection::Forward,
+    NTTType::Standard,
+)?;
+```
+
+**NTT Parameters:**
+- `domain_size`: Must be a power of 2
+- `NTTInputOutputOrder`: `NN`, `NR`, `RN`, or `RR` (Normal/Reversed)
+- `NTTDirection`: `Forward` or `Inverse`
+- `NTTType`: `Standard` or `Coset`
+
+### Polynomial Multiplication
+
+Accelerated polynomial multiplication for proof generation:
+
+```rust
+use snarkvm_algorithms_cuda::polymul;
+
+let result = polymul(
+    domain_size,
+    &polynomials,
+    &evaluations,
+    &zero_element,
+)?;
+```
+
+## Configuration
+
+The CUDA build configuration is managed in `algorithms/cuda/Cargo.toml`:
+
+```toml
+[features]
+default = []
+portable = ["blst/portable"]  # Disable ISA extensions for portability
+quiet = []                     # Suppress CUDA compilation output
+
+[dependencies]
+blst = { version = "0.3.11" }  # BLS12-377 curve operations
+sppark = { version = "0.1.5" }  # CUDA utilities
+```
+
+### Build Script Configuration
+
+The `build.rs` script automatically detects CUDA availability:
+
+```rust
+// CUDA compilation flags (from build.rs)
+nvcc.flag("-arch=sm_70");          // Minimum compute capability
+nvcc.flag("-maxrregcount=255");    // Register optimization
+nvcc.flag("-g");                    // Debug symbols
+```
+
+<Warning>
+  If `nvcc` is not found in your PATH, the build will fall back to CPU-only mode. Ensure CUDA Toolkit is properly installed and `/usr/local/cuda/bin` is in your PATH.
+</Warning>
+
+## Performance Considerations
+
+### When to Use CUDA
+
+**Ideal Use Cases:**
+- Proof generation with large constraint systems
+- Batch processing of cryptographic operations
+- Mining and puzzle solving operations
+- Large-scale MSM computations (>10,000 points)
+
+**Not Recommended:**
+- Small computations (overhead exceeds benefit)
+- Systems without compatible NVIDIA GPUs
+- Memory-constrained environments
+
+### Performance Gains
+
+Expected speedup compared to CPU implementation:
+
+- **MSM (10K points)**: 5-15x faster
+- **MSM (1M points)**: 20-50x faster
+- **NTT operations**: 10-30x faster
+- **Polynomial multiplication**: 15-40x faster
+
+<Note>
+  Actual performance depends on GPU model, problem size, and memory bandwidth. Smaller problem sizes may see diminished speedup due to kernel launch overhead.
+</Note>
+
+## Troubleshooting
+
+### NVCC Not Found
+
+If you see "nvcc must be in the path":
+
+```bash
+# Add CUDA to PATH (Linux)
+export PATH=/usr/local/cuda/bin:$PATH
+export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
+
+# Or specify NVCC location
+export NVCC=/usr/local/cuda/bin/nvcc
+```
+
+### Compute Capability Errors
+
+If your GPU is older than sm_70:
+
+```bash
+# Check your GPU's compute capability
+nvidia-smi --query-gpu=compute_cap --format=csv
+```
+
+Unfortunately, GPUs older than Volta (pre-2018) are not supported.
+
+### Out of Memory Errors
+
+For large computations:
+
+```rust
+// Process in smaller batches
+for chunk in points.chunks(batch_size) {
+    let partial_result = msm(chunk, &scalars[..chunk.len()])?;
+    // Accumulate results
+}
+```
+
+## Platform-Specific Notes
+
+### Linux
+
+- Most widely tested platform
+- Recommended for production use
+- Full support for all CUDA features
+
+### Windows
+
+- Requires MinGW or Clang toolchain (MSVC not supported)
+- May require additional configuration
+- Set `CC` and `CXX` environment variables if needed
+
+### macOS
+
+CUDA is not supported on macOS (no NVIDIA drivers since macOS 10.14).
+
+## Feature Flags
+
+Enable CUDA in your workspace `Cargo.toml`:
+
+```toml
+[features]
+cuda = ["snarkvm-algorithms/cuda"]
+
+[dependencies.snarkvm-algorithms]
+path = "algorithms"
+default-features = false
+
+[dependencies.snarkvm-algorithms-cuda]
+path = "algorithms/cuda"
+optional = true
+```
+
+## Related Topics
+
+- [Storage Modes](/advanced/storage-modes) - Optimize data storage for GPU workflows
+- [Custom Networks](/advanced/custom-networks) - Configure networks for testing CUDA performance

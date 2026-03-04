@@ -1,0 +1,555 @@
+---
+title: Program Types
+description: Program data structures including Identifier, Literal, Plaintext, Record, Value, and ProgramID
+---
+
+The `program` module provides data structures for Aleo programs and their execution. These types represent program state, function parameters, and return values.
+
+## Identifier
+
+A named identifier for program components (variables, functions, structs, etc.).
+
+### Structure
+
+```rust
+pub struct Identifier<N: Network> {
+    // Internal identifier representation
+}
+```
+
+### Rules
+
+- Must be lowercase alphanumeric with underscores
+- Cannot be a reserved keyword
+- Maximum length depends on context
+
+### Example
+
+```rust
+use snarkvm_console::program::Identifier;
+use snarkvm_console::network::MainnetV0;
+use std::str::FromStr;
+
+type CurrentNetwork = MainnetV0;
+
+let id = Identifier::<CurrentNetwork>::from_str("my_variable")?;
+let func = Identifier::<CurrentNetwork>::from_str("transfer_public")?;
+```
+
+## ProgramID
+
+A unique identifier for an Aleo program.
+
+### Structure
+
+```rust
+pub struct ProgramID<N: Network> {
+    name: Identifier<N>,
+    network: Identifier<N>,
+}
+```
+
+<ParamField path="name" type="Identifier<N>">
+  The program name (lowercase alphanumeric)
+</ParamField>
+
+<ParamField path="network" type="Identifier<N>">
+  The network-level domain (NLD), must be "aleo"
+</ParamField>
+
+### Methods
+
+<ResponseField name="name" type="fn name(&self) -> &Identifier<N>">
+  Returns the program name
+</ResponseField>
+
+<ResponseField name="network" type="fn network(&self) -> &Identifier<N>">
+  Returns the network-level domain
+</ResponseField>
+
+<ResponseField name="is_aleo" type="fn is_aleo(&self) -> bool">
+  Returns true if the network-level domain is "aleo"
+</ResponseField>
+
+### Format
+
+Program IDs follow the format `{name}.{network}`:
+
+```rust
+let program_id = ProgramID::<CurrentNetwork>::from_str("credits.aleo")?;
+let program_id = ProgramID::<CurrentNetwork>::from_str("token.aleo")?;
+let program_id = ProgramID::<CurrentNetwork>::from_str("my_program.aleo")?;
+
+assert!(program_id.is_aleo());
+```
+
+## Literal
+
+A primitive value in Aleo programs.
+
+### Variants
+
+```rust
+pub enum Literal<N: Network> {
+    Address(Address<N>),
+    Boolean(Boolean<N>),
+    Field(Field<N>),
+    Group(Group<N>),
+    I8(I8<N>),
+    I16(I16<N>),
+    I32(I32<N>),
+    I64(I64<N>),
+    I128(I128<N>),
+    U8(U8<N>),
+    U16(U16<N>),
+    U32(U32<N>),
+    U64(U64<N>),
+    U128(U128<N>),
+    Scalar(Scalar<N>),
+    Signature(Box<Signature<N>>),
+    String(StringType<N>),
+}
+```
+
+### Type Checking
+
+Literals have an associated `LiteralType`:
+
+```rust
+pub enum LiteralType {
+    Address,
+    Boolean,
+    Field,
+    Group,
+    I8, I16, I32, I64, I128,
+    U8, U16, U32, U64, U128,
+    Scalar,
+    Signature,
+    String,
+}
+```
+
+### Example
+
+```rust
+use snarkvm_console::program::Literal;
+use snarkvm_console::types::{Field, Boolean, U64};
+use snarkvm_console::network::MainnetV0;
+
+type CurrentNetwork = MainnetV0;
+
+let lit_bool = Literal::Boolean(Boolean::new(true));
+let lit_field = Literal::Field(Field::from_u64(42));
+let lit_u64 = Literal::U64(U64::new(1000));
+
+// Parse from string
+let lit = Literal::<CurrentNetwork>::from_str("123field")?;
+let lit = Literal::<CurrentNetwork>::from_str("true")?;
+let lit = Literal::<CurrentNetwork>::from_str("42u64")?;
+```
+
+### Casting
+
+Literals support type casting:
+
+```rust
+use snarkvm_console::program::Cast;
+
+let field_lit = Literal::Field(Field::from_u64(42));
+let u64_lit = field_lit.cast(LiteralType::U64)?;
+```
+
+## Plaintext
+
+A plaintext value that can be a literal, struct, or array.
+
+### Variants
+
+```rust
+pub enum Plaintext<N: Network> {
+    Literal(Literal<N>, OnceLock<Vec<bool>>),
+    Struct(IndexMap<Identifier<N>, Plaintext<N>>, OnceLock<Vec<bool>>),
+    Array(Vec<Plaintext<N>>, OnceLock<Vec<bool>>),
+}
+```
+
+<ParamField path="Literal" type="(Literal<N>, OnceLock<Vec<bool>>)">
+  A primitive value with cached bit representation
+</ParamField>
+
+<ParamField path="Struct" type="(IndexMap<Identifier<N>, Plaintext<N>>, OnceLock<Vec<bool>>)">
+  A struct with named fields and cached bit representation
+</ParamField>
+
+<ParamField path="Array" type="(Vec<Plaintext<N>>, OnceLock<Vec<bool>>)">
+  An array of plaintext values with cached bit representation
+</ParamField>
+
+### Methods
+
+<ResponseField name="from_bit_array" type="fn from_bit_array(bits: Vec<bool>, length: u32) -> Result<Self>">
+  Creates a plaintext from a bit array
+</ResponseField>
+
+<ResponseField name="as_bit_array" type="fn as_bit_array(&self) -> Result<Vec<bool>>">
+  Returns the plaintext as a bit array
+</ResponseField>
+
+<ResponseField name="as_byte_array" type="fn as_byte_array(&self) -> Result<Vec<u8>>">
+  Returns the plaintext as a byte array
+</ResponseField>
+
+<ResponseField name="as_field_array" type="fn as_field_array(&self) -> Result<Vec<Field<N>>>">
+  Returns the plaintext as a field array
+</ResponseField>
+
+### Example - Literals
+
+```rust
+use snarkvm_console::program::{Plaintext, Literal};
+use snarkvm_console::types::{Field, Boolean};
+use snarkvm_console::network::MainnetV0;
+
+type CurrentNetwork = MainnetV0;
+
+// From literal
+let plaintext = Plaintext::from(Literal::Boolean(Boolean::new(true)));
+let plaintext = Plaintext::from(Literal::Field(Field::from_u64(42)));
+
+// Parse from string
+let plaintext = Plaintext::<CurrentNetwork>::from_str("true")?;
+let plaintext = Plaintext::<CurrentNetwork>::from_str("123field")?;
+```
+
+### Example - Structs
+
+```rust
+use snarkvm_console::program::{Plaintext, Identifier};
+use indexmap::IndexMap;
+
+// Create a struct
+let mut members = IndexMap::new();
+members.insert(
+    Identifier::from_str("x")?,
+    Plaintext::from_str("1field")?
+);
+members.insert(
+    Identifier::from_str("y")?,
+    Plaintext::from_str("2field")?
+);
+let plaintext = Plaintext::Struct(members, OnceLock::new());
+
+// Parse from string
+let plaintext = Plaintext::<CurrentNetwork>::from_str(
+    "{ x: 1field, y: 2field }"
+)?;
+```
+
+### Example - Arrays
+
+```rust
+// Create an array
+let elements = vec![
+    Plaintext::from_str("1field")?,
+    Plaintext::from_str("2field")?,
+    Plaintext::from_str("3field")?,
+];
+let plaintext = Plaintext::Array(elements, OnceLock::new());
+
+// Parse from string
+let plaintext = Plaintext::<CurrentNetwork>::from_str(
+    "[1field, 2field, 3field]"
+)?;
+
+// U8 array
+let bytes = vec![U8::new(1), U8::new(2), U8::new(3)];
+let plaintext = Plaintext::from(bytes);
+```
+
+### Nested Structures
+
+Plaintext supports arbitrary nesting:
+
+```rust
+let plaintext = Plaintext::<CurrentNetwork>::from_str(
+    "{
+        name: \"Alice\",
+        balance: 1000u64,
+        metadata: {
+            created: 1234567890u64,
+            tags: [1u8, 2u8, 3u8]
+        }
+    }"
+)?;
+```
+
+## Record
+
+A record is an encrypted state object with an owner.
+
+### Structure
+
+```rust
+pub struct Record<N: Network, Private: Visibility> {
+    owner: Owner<N, Private>,
+    data: IndexMap<Identifier<N>, Entry<N, Private>>,
+    nonce: Group<N>,
+    version: U8<N>,
+}
+```
+
+<ParamField path="owner" type="Owner<N, Private>">
+  The owner of the record (address or ciphertext)
+</ParamField>
+
+<ParamField path="data" type="IndexMap<Identifier<N>, Entry<N, Private>>">
+  The record data (named entries)
+</ParamField>
+
+<ParamField path="nonce" type="Group<N>">
+  The nonce used for encryption and commitment
+</ParamField>
+
+<ParamField path="version" type="U8<N>">
+  Version 0 uses BHP hash, version 1 uses BHP commitment
+</ParamField>
+
+### Owner
+
+```rust
+pub enum Owner<N: Network, Private: Visibility> {
+    Public(Address<N>),
+    Private(Private),
+}
+```
+
+### Entry
+
+Record entries can be public or private:
+
+```rust
+pub enum Entry<N: Network, Private: Visibility> {
+    Constant(Plaintext<N>),
+    Public(Plaintext<N>),
+    Private(Private),
+}
+```
+
+### Methods
+
+<ResponseField name="from_plaintext" type="fn from_plaintext(...) -> Result<Record<N, Plaintext<N>>>">
+  Creates a plaintext record
+</ResponseField>
+
+<ResponseField name="from_ciphertext" type="fn from_ciphertext(...) -> Result<Record<N, Ciphertext<N>>>">
+  Creates a ciphertext record
+</ResponseField>
+
+<ResponseField name="owner" type="fn owner(&self) -> &Owner<N, Private>">
+  Returns the record owner
+</ResponseField>
+
+<ResponseField name="data" type="fn data(&self) -> &IndexMap<Identifier<N>, Entry<N, Private>>">
+  Returns the record data
+</ResponseField>
+
+<ResponseField name="nonce" type="fn nonce(&self) -> &Group<N>">
+  Returns the nonce
+</ResponseField>
+
+<ResponseField name="version" type="fn version(&self) -> &U8<N>">
+  Returns the version
+</ResponseField>
+
+<ResponseField name="is_hiding" type="fn is_hiding(&self) -> bool">
+  Returns true if using hiding commitments (version != 0)
+</ResponseField>
+
+<ResponseField name="encrypt" type="fn encrypt(&self, randomizer: Scalar<N>) -> Result<Record<N, Ciphertext<N>>>">
+  Encrypts the record
+</ResponseField>
+
+<ResponseField name="decrypt" type="fn decrypt(view_key: &ViewKey<N>) -> Result<Record<N, Plaintext<N>>>">
+  Decrypts a ciphertext record
+</ResponseField>
+
+### Example
+
+```rust
+use snarkvm_console::program::{Record, Owner, Entry, Identifier};
+use snarkvm_console::account::Address;
+use snarkvm_console::types::{Group, U8};
+use snarkvm_console::network::MainnetV0;
+use indexmap::IndexMap;
+
+type CurrentNetwork = MainnetV0;
+
+// Create record data
+let mut data = IndexMap::new();
+data.insert(
+    Identifier::from_str("balance")?,
+    Entry::Private(Plaintext::from_str("1000u64")?)
+);
+data.insert(
+    Identifier::from_str("token_id")?,
+    Entry::Public(Plaintext::from_str("1u64")?)
+);
+
+// Create the record
+let owner = Owner::Private(address);
+let nonce = Group::generator();
+let version = U8::new(1); // Use hiding commitments
+let record = Record::from_plaintext(owner, data, nonce, version)?;
+
+// Encrypt
+let ciphertext_record = record.encrypt(randomizer)?;
+
+// Decrypt
+let plaintext_record = ciphertext_record.decrypt(&view_key)?;
+```
+
+## Value
+
+A value can be a plaintext, record, or future.
+
+### Variants
+
+```rust
+pub enum Value<N: Network> {
+    Plaintext(Plaintext<N>),
+    Record(Record<N, Plaintext<N>>),
+    Future(Future<N>),
+}
+```
+
+<ParamField path="Plaintext" type="Plaintext<N>">
+  A plaintext value (literal, struct, or array)
+</ParamField>
+
+<ParamField path="Record" type="Record<N, Plaintext<N>>">
+  A record value with owner and data
+</ParamField>
+
+<ParamField path="Future" type="Future<N>">
+  A future representing deferred computation
+</ParamField>
+
+### Conversions
+
+Value implements `From` for all its variants:
+
+```rust
+let value = Value::from(literal);
+let value = Value::from(plaintext);
+let value = Value::from(record);
+let value = Value::from(future);
+```
+
+### Example
+
+```rust
+use snarkvm_console::program::{Value, Plaintext, Literal};
+use snarkvm_console::types::Field;
+use snarkvm_console::network::MainnetV0;
+
+type CurrentNetwork = MainnetV0;
+
+// From literal
+let lit = Literal::Field(Field::from_u64(42));
+let value = Value::from(lit);
+
+// From plaintext
+let plaintext = Plaintext::from_str("{ x: 1field, y: 2field }")?;
+let value = Value::from(plaintext);
+
+// From record
+let value = Value::from(record);
+
+// Pattern matching
+match value {
+    Value::Plaintext(p) => println!("Plaintext: {}", p),
+    Value::Record(r) => println!("Record with {} entries", r.data().len()),
+    Value::Future(f) => println!("Future"),
+}
+```
+
+## Request and Response
+
+Types for function calls.
+
+### Request
+
+Represents a signed function request:
+
+```rust
+pub struct Request<N: Network> {
+    // Internal request structure
+}
+```
+
+<ResponseField name="sign" type="fn sign(...) -> Result<Self>">
+  Signs a request with a private key
+</ResponseField>
+
+<ResponseField name="verify" type="fn verify(&self, ...) -> bool">
+  Verifies the request signature
+</ResponseField>
+
+### Response
+
+Represents function outputs:
+
+```rust
+pub struct Response<N: Network> {
+    // Internal response structure
+}
+```
+
+## Access Paths
+
+Access nested data in structs and arrays:
+
+```rust
+pub enum Access<N: Network> {
+    Member(Identifier<N>),
+    Index(U32<N>),
+}
+```
+
+### Example
+
+```rust
+use snarkvm_console::program::Access;
+
+// Access struct member
+let access = Access::Member(Identifier::from_str("balance")?);
+
+// Access array index
+let access = Access::Index(U32::new(0));
+```
+
+## Type System
+
+Types are checked at compile time:
+
+```rust
+pub enum PlaintextType<N: Network> {
+    Literal(LiteralType),
+    Struct(Identifier<N>),
+    Array(Box<PlaintextType<N>>, U32<N>),
+}
+
+pub enum ValueType<N: Network> {
+    Constant(PlaintextType<N>),
+    Public(PlaintextType<N>),
+    Private(PlaintextType<N>),
+    Record(Identifier<N>),
+    Future(Locator<N>),
+}
+```
+
+## See Also
+
+- [Console Types](/api/console/types) - Primitive types used in programs
+- [Account Types](/api/console/account) - Keys and addresses
+- [Network Module](/api/console/network) - Network parameters and limits

@@ -1,0 +1,719 @@
+---
+title: Program Types
+description: Program structure including functions, closures, instructions, and finalize logic
+---
+
+## Overview
+
+The program module defines the structure of Aleo programs, including their components: functions, closures, instructions, structs, records, and mappings.
+
+## Program
+
+### Type Definition
+
+```rust
+pub struct ProgramCore<N: Network> {
+    /// The ID of the program
+    id: ProgramID<N>,
+    /// Declared imports
+    imports: IndexMap<ProgramID<N>, Import<N>>,
+    /// Program components (mappings, structs, records, closures, functions)
+    components: IndexMap<ProgramLabel<N>, ProgramDefinition>,
+    /// Optional constructor
+    constructor: Option<ConstructorCore<N>>,
+    /// Declared mappings
+    mappings: IndexMap<Identifier<N>, Mapping<N>>,
+    /// Declared structs
+    structs: IndexMap<Identifier<N>, StructType<N>>,
+    /// Declared record types
+    records: IndexMap<Identifier<N>, RecordType<N>>,
+    /// Declared closures
+    closures: IndexMap<Identifier<N>, ClosureCore<N>>,
+    /// Declared functions
+    functions: IndexMap<Identifier<N>, FunctionCore<N>>,
+}
+```
+
+Source: synthesizer/program/src/lib.rs:140-159
+
+### Initialization
+
+#### Program::new
+
+Creates a new empty program.
+
+```rust
+pub fn new(id: ProgramID<N>) -> Result<Self>
+```
+
+<ParamField path="id" type="ProgramID<N>" required>
+  The program identifier (e.g., "token.aleo")
+</ParamField>
+
+Source: synthesizer/program/src/lib.rs:278-293
+
+#### Program::from_str
+
+Parses a program from Aleo source code.
+
+```rust
+impl FromStr for Program<N> {
+    fn from_str(s: &str) -> Result<Self>
+}
+```
+
+#### Example
+
+```rust
+use snarkvm_synthesizer_program::Program;
+use snarkvm_console::network::MainnetV0;
+
+let source = r"
+program token.aleo;
+
+record token:
+    owner as address.private;
+    amount as u64.private;
+
+function mint:
+    input r0 as address.private;
+    input r1 as u64.private;
+    cast r0 r1 into r2 as token.record;
+    output r2 as token.record;
+";
+
+let program = Program::<MainnetV0>::from_str(source)?;
+```
+
+### Program Queries
+
+#### Program::id
+
+Returns the program ID.
+
+```rust
+pub fn id(&self) -> &ProgramID<N>
+```
+
+#### Program::imports
+
+Returns the program imports.
+
+```rust
+pub fn imports(&self) -> &IndexMap<ProgramID<N>, Import<N>>
+```
+
+#### Program::mappings
+
+Returns the program mappings.
+
+```rust
+pub fn mappings(&self) -> &IndexMap<Identifier<N>, Mapping<N>>
+```
+
+#### Program::structs
+
+Returns the program structs.
+
+```rust
+pub fn structs(&self) -> &IndexMap<Identifier<N>, StructType<N>>
+```
+
+#### Program::records
+
+Returns the program record types.
+
+```rust
+pub fn records(&self) -> &IndexMap<Identifier<N>, RecordType<N>>
+```
+
+#### Program::closures
+
+Returns the program closures.
+
+```rust
+pub fn closures(&self) -> &IndexMap<Identifier<N>, Closure<N>>
+```
+
+#### Program::functions
+
+Returns the program functions.
+
+```rust
+pub fn functions(&self) -> &IndexMap<Identifier<N>, Function<N>>
+```
+
+### Special Programs
+
+#### Program::credits
+
+Returns the built-in credits.aleo program.
+
+```rust
+pub fn credits() -> Result<Self>
+```
+
+The credits program is a special first-class program that manages:
+
+- Public and private balances
+- Staking and delegation
+- Validator committees
+- Transaction fees
+
+Source: synthesizer/program/src/lib.rs:297-299
+
+### Program Validation
+
+#### Program::is_reserved_keyword
+
+Checks if a name is a reserved keyword.
+
+```rust
+pub fn is_reserved_keyword(name: &str) -> bool
+```
+
+Reserved keywords include: `input`, `output`, `function`, `closure`, `struct`, `record`, `mapping`, etc.
+
+Source: synthesizer/program/src/lib.rs:193-266
+
+## Function
+
+### Type Definition
+
+```rust
+pub struct FunctionCore<N: Network> {
+    /// The function name
+    name: Identifier<N>,
+    /// The input statements
+    inputs: IndexSet<Input<N>>,
+    /// The instructions
+    instructions: Vec<Instruction<N>>,
+    /// The output statements
+    outputs: IndexSet<Output<N>>,
+    /// Optional finalize logic
+    finalize_logic: Option<FinalizeCore<N>>,
+}
+```
+
+Source: synthesizer/program/src/function/mod.rs:34-46
+
+### Function::new
+
+Creates a new function.
+
+```rust
+pub fn new(name: Identifier<N>) -> Self
+```
+
+Source: synthesizer/program/src/function/mod.rs:49-51
+
+### Function Queries
+
+#### Function::name
+
+Returns the function name.
+
+```rust
+pub const fn name(&self) -> &Identifier<N>
+```
+
+#### Function::inputs
+
+Returns the function inputs.
+
+```rust
+pub const fn inputs(&self) -> &IndexSet<Input<N>>
+```
+
+#### Function::input_types
+
+Returns the input value types.
+
+```rust
+pub fn input_types(&self) -> Vec<ValueType<N>>
+```
+
+Source: synthesizer/program/src/function/mod.rs:65-67
+
+#### Function::instructions
+
+Returns the function instructions.
+
+```rust
+pub fn instructions(&self) -> &[Instruction<N>]
+```
+
+#### Function::outputs
+
+Returns the function outputs.
+
+```rust
+pub const fn outputs(&self) -> &IndexSet<Output<N>>
+```
+
+#### Function::output_types
+
+Returns the output value types.
+
+```rust
+pub fn output_types(&self) -> Vec<ValueType<N>>
+```
+
+Source: synthesizer/program/src/function/mod.rs:85-87
+
+#### Function::finalize_logic
+
+Returns the optional finalize logic.
+
+```rust
+pub const fn finalize_logic(&self) -> Option<&FinalizeCore<N>>
+```
+
+Source: synthesizer/program/src/function/mod.rs:95-97
+
+### Function Limits
+
+Functions have network-defined limits:
+
+- Maximum inputs: `N::MAX_INPUTS`
+- Maximum outputs: `N::MAX_OUTPUTS`
+- Maximum instructions: `N::MAX_INSTRUCTIONS`
+
+## Closure
+
+### Type Definition
+
+```rust
+pub struct ClosureCore<N: Network> {
+    /// The closure name
+    name: Identifier<N>,
+    /// The input statements
+    inputs: IndexSet<Input<N>>,
+    /// The instructions
+    instructions: Vec<Instruction<N>>,
+    /// The output statements
+    outputs: IndexSet<Output<N>>,
+}
+```
+
+Closures are similar to functions but:
+
+- Cannot have finalize logic
+- Cannot produce records
+- Cannot access on-chain state
+- Can be called from functions or other closures
+
+Source: synthesizer/program/src/closure/mod.rs:34-45
+
+### Closure::new
+
+Creates a new closure.
+
+```rust
+pub fn new(name: Identifier<N>) -> Self
+```
+
+### Closure Queries
+
+#### Closure::name
+
+Returns the closure name.
+
+```rust
+pub const fn name(&self) -> &Identifier<N>
+```
+
+#### Closure::inputs
+
+Returns the closure inputs.
+
+```rust
+pub const fn inputs(&self) -> &IndexSet<Input<N>>
+```
+
+#### Closure::instructions
+
+Returns the closure instructions.
+
+```rust
+pub fn instructions(&self) -> &[Instruction<N>]
+```
+
+#### Closure::outputs
+
+Returns the closure outputs.
+
+```rust
+pub const fn outputs(&self) -> &IndexSet<Output<N>>
+```
+
+#### Closure::output_types
+
+Returns the output register types.
+
+```rust
+pub fn output_types(&self) -> Vec<RegisterType<N>>
+```
+
+Source: synthesizer/program/src/closure/mod.rs:74-76
+
+## Instruction
+
+Instructions are the basic operations in Aleo programs.
+
+### Type Definition
+
+```rust
+pub enum Instruction<N: Network> {
+    Abs(Abs<N>),
+    AbsWrapped(AbsWrapped<N>),
+    Add(Add<N>),
+    AddWrapped(AddWrapped<N>),
+    And(And<N>),
+    AssertEq(AssertEq<N>),
+    AssertNeq(AssertNeq<N>),
+    Call(Call<N>),
+    Cast(Cast<N>),
+    CastLossy(CastLossy<N>),
+    CommitBHP256(CommitBHP256<N>),
+    // ... many more instruction types
+}
+```
+
+Source: synthesizer/program/src/logic/instruction/mod.rs:59-200+
+
+### Instruction Categories
+
+#### Arithmetic
+
+- `Add`, `Sub`, `Mul`, `Div`, `Rem`, `Pow`
+- Wrapped variants: `AddWrapped`, `SubWrapped`, etc.
+- `Abs`, `AbsWrapped`, `Double`, `Square`, `Sqrt`
+- `Inv`, `Neg`
+
+#### Bitwise
+
+- `And`, `Or`, `Xor`, `Nand`, `Nor`
+- `Not`
+- `Shl`, `Shr`, `ShlWrapped`, `ShrWrapped`
+
+#### Comparison
+
+- `GreaterThan`, `GreaterThanOrEqual`
+- `LessThan`, `LessThanOrEqual`
+- `IsEq`, `IsNeq`
+
+#### Cryptographic
+
+- **Hash**: `HashBHP256`, `HashBHP512`, `HashBHP768`, `HashBHP1024`
+- **Hash (Keccak)**: `HashKeccak256`, `HashKeccak384`, `HashKeccak512`
+- **Hash (Pedersen)**: `HashPED64`, `HashPED128`
+- **Hash (Poseidon)**: `HashPSD2`, `HashPSD4`, `HashPSD8`
+- **Hash (SHA)**: `HashSha3_256`, `HashSha3_384`, `HashSha3_512`
+- **Commit**: `CommitBHP256`, `CommitBHP512`, `CommitBHP768`, `CommitBHP1024`
+- **Commit (Pedersen)**: `CommitPED64`, `CommitPED128`
+
+#### Signature Verification
+
+- `SignVerify` - Schnorr signatures
+- `ECDSAVerifyDigest`, `ECDSAVerifyKeccak256`, `ECDSAVerifyKeccak384`, `ECDSAVerifyKeccak512`
+- `ECDSAVerifySha3_256`, `ECDSAVerifySha3_384`, `ECDSAVerifySha3_512`
+- Ethereum variants: `ECDSAVerifyDigestEth`, `ECDSAVerifyKeccak256Eth`, etc.
+
+#### Control Flow
+
+- `Call` - Call a closure or function
+- `Async` - Call finalize asynchronously
+
+#### Type Operations
+
+- `Cast` - Cast operands to a type
+- `CastLossy` - Cast with lossy truncation
+- `Ternary` - Conditional selection
+
+#### Assertions
+
+- `AssertEq` - Assert equality
+- `AssertNeq` - Assert inequality
+
+#### Serialization
+
+- `DeserializeBits`, `DeserializeBitsRaw`
+- `SerializeBits`, `SerializeBitsRaw`
+
+### Instruction Example
+
+```aleo
+function compute:
+    input r0 as field.private;
+    input r1 as field.private;
+    add r0 r1 into r2;              // Add instruction
+    mul r2 10field into r3;          // Mul instruction
+    hash.bhp256 r3 into r4;          // HashBHP256 instruction
+    output r4 as field.private;
+```
+
+## Finalize
+
+### Type Definition
+
+```rust
+pub struct FinalizeCore<N: Network> {
+    /// The finalize name (matches function name)
+    name: Identifier<N>,
+    /// The input statements
+    inputs: IndexSet<Input<N>>,
+    /// The commands (like instructions but for state)
+    commands: Vec<Command<N>>,
+}
+```
+
+Finalize blocks execute on-chain after a function completes:
+
+- Can read/write mappings
+- Cannot access private data
+- Executed by validators during block production
+
+Source: synthesizer/program/src/finalize/mod.rs
+
+### Finalize Commands
+
+Finalize uses `Command` instead of `Instruction`:
+
+```rust
+pub enum Command<N: Network> {
+    Instruction(Instruction<N>),  // Regular instruction
+    Contains(Contains<N>),        // Check if key exists in mapping
+    Get(Get<N>),                  // Read from mapping
+    GetOrUse(GetOrUse<N>),       // Read from mapping with default
+    Set(Set<N>),                  // Write to mapping
+    Remove(Remove<N>),            // Delete from mapping
+    RandChaCha(RandChaCha<N>),   // Generate random value
+    Position(Position<N>),        // Get position in committee
+    Branch(Branch<N>),            // Conditional execution
+}
+```
+
+### Finalize Example
+
+```aleo
+mapping balances:
+    key as address.public;
+    value as u64.public;
+
+function transfer_public:
+    input r0 as address.public;
+    input r1 as u64.public;
+    async transfer_public self.caller r0 r1 into r2;
+    output r2 as token.aleo/transfer_public.future;
+
+finalize transfer_public:
+    input r0 as address.public;  // sender
+    input r1 as address.public;  // recipient
+    input r2 as u64.public;      // amount
+    
+    // Deduct from sender
+    get balances[r0] into r3;
+    sub r3 r2 into r4;
+    set r4 into balances[r0];
+    
+    // Add to recipient
+    get.or_use balances[r1] 0u64 into r5;
+    add r5 r2 into r6;
+    set r6 into balances[r1];
+```
+
+## Mapping
+
+Mappings store on-chain state.
+
+### Type Definition
+
+```rust
+pub struct Mapping<N: Network> {
+    /// The mapping name
+    name: Identifier<N>,
+    /// The key type
+    key_type: PlaintextType<N>,
+    /// The value type
+    value_type: PlaintextType<N>,
+}
+```
+
+### Mapping Example
+
+```aleo
+mapping account:
+    key as address.public;
+    value as u64.public;
+
+mapping metadata:
+    key as field.public;
+    value as TokenInfo.public;
+
+struct TokenInfo:
+    name as u128.public;
+    symbol as u128.public;
+    decimals as u8.public;
+```
+
+## Input/Output
+
+### Input
+
+Defines a function or closure input.
+
+```rust
+pub struct Input<N: Network> {
+    register: Register<N>,
+    value_type: ValueType<N>,  // or RegisterType<N> for closures
+}
+```
+
+### Output
+
+Defines a function or closure output.
+
+```rust
+pub struct Output<N: Network> {
+    register: Register<N>,
+    value_type: ValueType<N>,  // or RegisterType<N> for closures
+}
+```
+
+## Value Types
+
+### ValueType
+
+Represents the type of a function input/output.
+
+```rust
+pub enum ValueType<N: Network> {
+    /// A constant value
+    Constant(PlaintextType<N>),
+    /// A public value
+    Public(PlaintextType<N>),
+    /// A private value
+    Private(PlaintextType<N>),
+    /// A record
+    Record(Identifier<N>),
+    /// An external record
+    ExternalRecord(Locator<N>),
+    /// A future (for async finalize)
+    Future(Locator<N>),
+}
+```
+
+### PlaintextType
+
+Represents the type of plaintext data.
+
+```rust
+pub enum PlaintextType<N: Network> {
+    /// A literal type (field, u64, etc.)
+    Literal(LiteralType),
+    /// A struct type
+    Struct(Identifier<N>),
+    /// An external struct from another program
+    ExternalStruct(Locator<N>),
+    /// An array type
+    Array(ArrayType<N>),
+}
+```
+
+### RegisterType
+
+Represents the type of a closure register.
+
+```rust
+pub enum RegisterType<N: Network> {
+    /// A plaintext type
+    Plaintext(PlaintextType<N>),
+    /// A record
+    Record(Identifier<N>),
+    /// An external record
+    ExternalRecord(Locator<N>),
+    /// A future
+    Future(Locator<N>),
+}
+```
+
+## Program Checksums
+
+Programs have checksums for integrity verification.
+
+### Program::to_checksum
+
+Computes the program checksum.
+
+```rust
+pub fn to_checksum(&self) -> Result<[U8<N>; 32]>
+```
+
+The checksum is computed using Keccak-256 over the program bytes.
+
+Source: synthesizer/program/src/to_checksum.rs
+
+## Program Restrictions
+
+Programs are validated against several restrictions:
+
+- Reserved keywords cannot be used as names
+- Maximum instruction count per function
+- Maximum input/output count
+- Type consistency across calls
+- Dependency resolution (imports)
+- No circular imports
+
+## Example: Complete Program
+
+```aleo
+program token.aleo;
+
+// Struct definition
+struct TokenInfo:
+    name as u128.public;
+    symbol as u128.public;
+    decimals as u8.public;
+
+// Record definition
+record token:
+    owner as address.private;
+    amount as u64.private;
+
+// Mapping definition
+mapping balances:
+    key as address.public;
+    value as u64.public;
+
+mapping info:
+    key as u8.public;
+    value as TokenInfo.public;
+
+// Closure (helper function)
+closure validate_amount:
+    input r0 as u64.private;
+    gt r0 0u64 into r1;
+    assert.eq r1 true;
+
+// Function with finalize
+function transfer_public:
+    input r0 as address.public;
+    input r1 as u64.public;
+    call validate_amount r1;
+    async transfer_public self.caller r0 r1 into r2;
+    output r2 as token.aleo/transfer_public.future;
+
+finalize transfer_public:
+    input r0 as address.public;  // sender
+    input r1 as address.public;  // recipient  
+    input r2 as u64.public;      // amount
+    
+    get balances[r0] into r3;
+    sub r3 r2 into r4;
+    set r4 into balances[r0];
+    
+    get.or_use balances[r1] 0u64 into r5;
+    add r5 r2 into r6;
+    set r6 into balances[r1];
+```

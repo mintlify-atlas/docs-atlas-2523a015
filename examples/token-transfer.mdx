@@ -1,0 +1,205 @@
+---
+title: Token transfer example
+description: Transfer credits between accounts on the Aleo network
+---
+
+This example demonstrates how to create and execute a private token transfer transaction on the Aleo network using SnarkVM.
+
+## Complete example
+
+```rust
+use snarkvm::{
+    prelude::*,
+    ledger::store::ConsensusStore,
+};
+use rand::thread_rng;
+
+fn main() -> Result<()> {
+    // Setup: Create sender and receiver accounts
+    let sender_key = PrivateKey::<Testnet3>::new(&mut thread_rng())?;
+    let receiver = Address::try_from(
+        PrivateKey::<Testnet3>::new(&mut thread_rng())?  
+    )?;
+    
+    println!("Sender:   {}", Address::try_from(&sender_key)?);
+    println!("Receiver: {}", receiver);
+    
+    // Initialize the VM
+    let store = ConsensusStore::<Testnet3, ConsensusMemory<Testnet3>>::open(
+        Some(aleo_std::StorageMode::Development(0))
+    )?;
+    let vm = VM::from(store)?;
+    
+    // Create transfer inputs
+    let inputs = [
+        // Note: In a real application, you would use an actual record
+        // from the ledger as the first input
+        Value::from_str(&format!("{}u64", 1000000))?, // Amount: 1 million microcredits
+        Value::from_str(&format!("{}", receiver))?,  // Recipient address
+        Value::from_str("100000u64")?,                // Amount to transfer
+    ];
+    
+    println!("\nCreating transfer transaction...");
+    
+    // Execute the transfer_private function
+    let transaction = vm.execute(
+        &sender_key,
+        ("credits.aleo", "transfer_private"),
+        inputs.iter(),
+        None,           // No additional fee record
+        0,              // Zero priority fee
+        None,           // No query (using VM directly)
+        &mut thread_rng()
+    )?;
+    
+    println!("Transaction ID: {}", transaction.id());
+    println!("Transaction created successfully!");
+    
+    Ok(())
+}
+```
+
+## Step by step
+
+<Steps>
+  <Step title="Create accounts">
+    ```rust
+    let sender_key = PrivateKey::<Testnet3>::new(&mut thread_rng())?;
+    let receiver = Address::try_from(
+        PrivateKey::<Testnet3>::new(&mut thread_rng())?  
+    )?;
+    ```
+    
+    Generate a private key for the sender and an address for the receiver.
+  </Step>
+  
+  <Step title="Initialize the VM">
+    ```rust
+    let store = ConsensusStore::<Testnet3, ConsensusMemory<Testnet3>>::open(
+        Some(aleo_std::StorageMode::Development(0))
+    )?;
+    let vm = VM::from(store)?;
+    ```
+    
+    Create a VM instance with in-memory storage for testing. In production, you would use `StorageMode::Production`.
+  </Step>
+  
+  <Step title="Prepare transfer inputs">
+    ```rust
+    let inputs = [
+        Value::from_str(&format!("{}u64", 1000000))?, // Source amount
+        Value::from_str(&format!("{}", receiver))?,   // Recipient
+        Value::from_str("100000u64")?,                 // Transfer amount
+    ];
+    ```
+    
+    The `transfer_private` function takes three inputs:
+    1. The input record (or amount for this example)
+    2. The recipient address
+    3. The amount to transfer (in microcredits)
+  </Step>
+  
+  <Step title="Execute the transaction">
+    ```rust
+    let transaction = vm.execute(
+        &sender_key,
+        ("credits.aleo", "transfer_private"),
+        inputs.iter(),
+        None,
+        0,
+        None,
+        &mut thread_rng()
+    )?;
+    ```
+    
+    Execute the `transfer_private` function from the `credits.aleo` program. This generates a zero-knowledge proof and creates the transaction.
+  </Step>
+</Steps>
+
+## Real-world usage
+
+In a production application, you would:
+
+1. **Find an unspent record** to use as input:
+
+```rust
+use snarkvm::ledger::Ledger;
+
+let ledger = Ledger::load(genesis_block, storage_mode)?;
+let view_key = ViewKey::try_from(&private_key)?;
+let records = ledger.find_unspent_credits_records(&view_key)?;
+```
+
+2. **Use the record as the first input**:
+
+```rust
+let record = records.values().next().unwrap();
+let inputs = [
+    Value::Record(record.clone()),
+    Value::from_str(&format!("{}", recipient))?,
+    Value::from_str(&format!("{}u64", amount))?,
+];
+```
+
+3. **Include a fee** for miners:
+
+```rust
+let fee_record = records.values().nth(1).unwrap();
+let transaction = vm.execute(
+    &private_key,
+    ("credits.aleo", "transfer_private"),
+    inputs.iter(),
+    Some(fee_record.clone()),
+    1000, // Priority fee in microcredits
+    None,
+    &mut thread_rng()
+)?;
+```
+
+## Transfer types
+
+The `credits.aleo` program supports multiple transfer functions:
+
+| Function | Description | Inputs |
+|----------|-------------|--------|
+| `transfer_private` | Private to private | Record, address, amount |
+| `transfer_private_to_public` | Private to public | Record, address, amount |
+| `transfer_public` | Public to public | Address, amount |
+| `transfer_public_to_private` | Public to private | Address, amount |
+
+<Note>
+  Private transfers hide amounts and recipients using zero-knowledge proofs. Public transfers are visible on the blockchain.
+</Note>
+
+## Error handling
+
+Common errors and solutions:
+
+<Accordion title="Insufficient balance">
+  Make sure the input record has enough credits to cover both the transfer amount and the fee.
+  
+  ```rust
+  if record.microcredits()? < amount + fee {
+      return Err(anyhow!("Insufficient balance"));
+  }
+  ```
+</Accordion>
+
+<Accordion title="Invalid address">
+  Verify the recipient address is valid for your network:
+  
+  ```rust
+  let address = Address::<Testnet3>::from_str(recipient_str)?;
+  ```
+</Accordion>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Custom program" icon="code" href="/examples/custom-program">
+    Create your own Aleo program
+  </Card>
+  <Card title="Managing records" icon="database" href="/guides/managing-records">
+    Learn how to work with records
+  </Card>
+</CardGroup>

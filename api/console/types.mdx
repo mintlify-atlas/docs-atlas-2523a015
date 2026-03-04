@@ -1,0 +1,534 @@
+---
+title: Console Types
+description: Primitive data types including Field, Group, Scalar, Boolean, Integer, and String
+---
+
+The `types` module provides the fundamental data types used throughout snarkVM. All types are generic over an `Environment` or `Network` parameter.
+
+## Field
+
+Field elements over the base field of the curve.
+
+### Structure
+
+```rust
+pub struct Field<E: Environment> {
+    field: E::Field,
+}
+```
+
+<ParamField path="field" type="E::Field">
+  The underlying field element
+</ParamField>
+
+### Constants
+
+<ResponseField name="SIZE_IN_BITS" type="usize">
+  The field size in bits
+</ResponseField>
+
+<ResponseField name="SIZE_IN_BYTES" type="usize">
+  The field size in bytes
+</ResponseField>
+
+<ResponseField name="SIZE_IN_DATA_BITS" type="usize">
+  The field capacity for data bits
+</ResponseField>
+
+### Methods
+
+<ResponseField name="new" type="fn new(field: E::Field) -> Self">
+  Initializes a new field element
+</ResponseField>
+
+<ResponseField name="new_domain_separator" type="fn new_domain_separator(domain: &str) -> Self">
+  Initializes a field element as a domain separator
+</ResponseField>
+
+<ResponseField name="from_u8" type="fn from_u8(value: u8) -> Self">
+  Creates a field element from a u8
+</ResponseField>
+
+<ResponseField name="from_u16" type="fn from_u16(value: u16) -> Self">
+  Creates a field element from a u16
+</ResponseField>
+
+<ResponseField name="from_u32" type="fn from_u32(value: u32) -> Self">
+  Creates a field element from a u32
+</ResponseField>
+
+<ResponseField name="from_u64" type="fn from_u64(value: u64) -> Self">
+  Creates a field element from a u64
+</ResponseField>
+
+<ResponseField name="from_u128" type="fn from_u128(value: u128) -> Self">
+  Creates a field element from a u128
+</ResponseField>
+
+<ResponseField name="zero" type="fn zero() -> Self">
+  Returns the additive identity (0)
+</ResponseField>
+
+<ResponseField name="one" type="fn one() -> Self">
+  Returns the multiplicative identity (1)
+</ResponseField>
+
+<ResponseField name="half" type="fn half() -> Self">
+  Returns 1 * 2^(-1)
+</ResponseField>
+
+### Arithmetic Operations
+
+Field supports standard arithmetic:
+- Addition: `field1 + field2`
+- Subtraction: `field1 - field2`
+- Multiplication: `field1 * field2`
+- Division: `field1 / field2`
+- Negation: `-field`
+- Inversion: `field.inverse()?`
+- Square: `field.square()`
+- Square root: `field.square_root()?`
+- Power: `field.pow(&[u64])`
+
+### Example
+
+```rust
+use snarkvm_console::types::Field;
+use snarkvm_console::network::MainnetV0;
+
+type CurrentNetwork = MainnetV0;
+
+// Create field elements
+let zero = Field::<CurrentNetwork>::zero();
+let one = Field::<CurrentNetwork>::one();
+let field = Field::<CurrentNetwork>::from_u64(42);
+
+// Arithmetic
+let sum = field + one;
+let product = field * Field::from_u64(2);
+let inverse = field.inverse()?;
+
+// Comparison
+assert!(field != zero);
+assert!(field > zero);
+
+// Serialization
+let bits = field.to_bits_le();
+let bytes = field.to_bytes_le()?;
+```
+
+## Group
+
+Group elements on the elliptic curve.
+
+### Structure
+
+```rust
+pub struct Group<E: Environment> {
+    group: E::Projective,
+}
+```
+
+<ParamField path="group" type="E::Projective">
+  The underlying group element in projective coordinates
+</ParamField>
+
+### Constants
+
+<ResponseField name="EDWARDS_A" type="Field<E>">
+  The coefficient A for the twisted Edwards curve equation
+</ResponseField>
+
+<ResponseField name="EDWARDS_D" type="Field<E>">
+  The coefficient D for the twisted Edwards curve equation
+</ResponseField>
+
+<ResponseField name="MONTGOMERY_A" type="Field<E>">
+  The coefficient A for the Montgomery curve equation
+</ResponseField>
+
+<ResponseField name="MONTGOMERY_B" type="Field<E>">
+  The coefficient B for the Montgomery curve equation
+</ResponseField>
+
+### Methods
+
+<ResponseField name="new" type="fn new(group: E::Affine) -> Self">
+  Initializes a new group element
+</ResponseField>
+
+<ResponseField name="generator" type="fn generator() -> Self">
+  Returns the prime subgroup generator
+</ResponseField>
+
+<ResponseField name="zero" type="fn zero() -> Self">
+  Returns the additive identity (point at infinity)
+</ResponseField>
+
+<ResponseField name="mul_by_cofactor" type="fn mul_by_cofactor(&self) -> Self">
+  Returns self * COFACTOR
+</ResponseField>
+
+<ResponseField name="div_by_cofactor" type="fn div_by_cofactor(&self) -> Self">
+  Returns self / COFACTOR
+</ResponseField>
+
+<ResponseField name="to_x_coordinate" type="fn to_x_coordinate(&self) -> Field<E>">
+  Returns the x-coordinate
+</ResponseField>
+
+<ResponseField name="to_y_coordinate" type="fn to_y_coordinate(&self) -> Field<E>">
+  Returns the y-coordinate
+</ResponseField>
+
+<ResponseField name="to_xy_coordinates" type="fn to_xy_coordinates(&self) -> (Field<E>, Field<E>)">
+  Returns both coordinates as a tuple
+</ResponseField>
+
+<ResponseField name="from_x_coordinate" type="fn from_x_coordinate(x: Field<E>) -> Result<Self>">
+  Recovers a group element from an x-coordinate
+</ResponseField>
+
+<ResponseField name="from_xy_coordinates" type="fn from_xy_coordinates(x: Field<E>, y: Field<E>) -> Result<Self>">
+  Creates a group element from x and y coordinates
+</ResponseField>
+
+### Arithmetic Operations
+
+Group supports:
+- Addition: `group1 + group2`
+- Subtraction: `group1 - group2`
+- Scalar multiplication: `group * scalar`
+- Negation: `-group`
+- Doubling: `group.double()`
+
+### Example
+
+```rust
+use snarkvm_console::types::{Group, Scalar, Field};
+use snarkvm_console::network::MainnetV0;
+
+type CurrentNetwork = MainnetV0;
+
+// Get the generator
+let generator = Group::<CurrentNetwork>::generator();
+
+// Scalar multiplication
+let scalar = Scalar::<CurrentNetwork>::from_u64(42);
+let point = generator * scalar;
+
+// Point addition
+let sum = point + generator;
+
+// Access coordinates
+let x = point.to_x_coordinate();
+let (x, y) = point.to_xy_coordinates();
+
+// Recover from x-coordinate
+let recovered = Group::from_x_coordinate(x)?;
+```
+
+## Scalar
+
+Scalar elements over the scalar field (used for private keys and exponents).
+
+### Structure
+
+```rust
+pub struct Scalar<E: Environment> {
+    scalar: E::Scalar,
+}
+```
+
+<ParamField path="scalar" type="E::Scalar">
+  The underlying scalar element
+</ParamField>
+
+### Constants
+
+<ResponseField name="SIZE_IN_BITS" type="usize">
+  The scalar size in bits
+</ResponseField>
+
+<ResponseField name="SIZE_IN_BYTES" type="usize">
+  The scalar size in bytes
+</ResponseField>
+
+<ResponseField name="SIZE_IN_DATA_BITS" type="usize">
+  The scalar capacity for data bits
+</ResponseField>
+
+### Methods
+
+<ResponseField name="new" type="fn new(scalar: E::Scalar) -> Self">
+  Initializes a new scalar
+</ResponseField>
+
+<ResponseField name="zero" type="fn zero() -> Self">
+  Returns the additive identity (0)
+</ResponseField>
+
+<ResponseField name="one" type="fn one() -> Self">
+  Returns the multiplicative identity (1)
+</ResponseField>
+
+<ResponseField name="from_field" type="fn from_field(field: &Field<E>) -> Result<Self>">
+  Converts a field element to a scalar (fails if out of range)
+</ResponseField>
+
+<ResponseField name="from_field_lossy" type="fn from_field_lossy(field: &Field<E>) -> Self">
+  Converts a field element to a scalar with modular reduction
+</ResponseField>
+
+<ResponseField name="to_field" type="fn to_field(&self) -> Field<E>">
+  Converts this scalar to a field element
+</ResponseField>
+
+### Arithmetic Operations
+
+Scalar supports:
+- Addition: `scalar1 + scalar2`
+- Subtraction: `scalar1 - scalar2`
+- Multiplication: `scalar1 * scalar2`
+- Division: `scalar1 / scalar2`
+- Negation: `-scalar`
+- Inversion: `scalar.inverse()?`
+- Square: `scalar.square()`
+- Power: `scalar.pow(&[u64])`
+
+### Example
+
+```rust
+use snarkvm_console::types::Scalar;
+use snarkvm_console::network::MainnetV0;
+
+type CurrentNetwork = MainnetV0;
+
+let scalar = Scalar::<CurrentNetwork>::from_u64(42);
+let doubled = scalar * Scalar::from_u64(2);
+let inverse = scalar.inverse()?;
+```
+
+## Boolean
+
+Boolean values.
+
+### Structure
+
+```rust
+pub struct Boolean<E: Environment> {
+    boolean: bool,
+    _phantom: PhantomData<E>,
+}
+```
+
+<ParamField path="boolean" type="bool">
+  The underlying boolean value
+</ParamField>
+
+### Methods
+
+<ResponseField name="new" type="fn new(boolean: bool) -> Self">
+  Initializes a new boolean
+</ResponseField>
+
+### Logical Operations
+
+Boolean supports:
+- AND: `bool1 & bool2`
+- OR: `bool1 | bool2`
+- XOR: `bool1 ^ bool2`
+- NOT: `!bool1`
+
+### Example
+
+```rust
+use snarkvm_console::types::Boolean;
+use snarkvm_console::network::MainnetV0;
+
+type CurrentNetwork = MainnetV0;
+
+let t = Boolean::<CurrentNetwork>::new(true);
+let f = Boolean::<CurrentNetwork>::new(false);
+
+assert!(*t & *t);
+assert!(*t | *f);
+assert!(!(*f));
+```
+
+## Integer Types
+
+Signed and unsigned integer types.
+
+### Available Types
+
+```rust
+pub type I8<E> = Integer<E, i8>;
+pub type I16<E> = Integer<E, i16>;
+pub type I32<E> = Integer<E, i32>;
+pub type I64<E> = Integer<E, i64>;
+pub type I128<E> = Integer<E, i128>;
+
+pub type U8<E> = Integer<E, u8>;
+pub type U16<E> = Integer<E, u16>;
+pub type U32<E> = Integer<E, u32>;
+pub type U64<E> = Integer<E, u64>;
+pub type U128<E> = Integer<E, u128>;
+```
+
+### Structure
+
+```rust
+pub struct Integer<E: Environment, I: IntegerType> {
+    integer: I,
+    _phantom: PhantomData<E>,
+}
+```
+
+### Constants
+
+<ResponseField name="MAX" type="Self">
+  Maximum value for this integer type
+</ResponseField>
+
+<ResponseField name="MIN" type="Self">
+  Minimum value for this integer type
+</ResponseField>
+
+### Methods
+
+<ResponseField name="new" type="fn new(integer: I) -> Self">
+  Initializes a new integer
+</ResponseField>
+
+<ResponseField name="zero" type="fn zero() -> Self">
+  Returns zero
+</ResponseField>
+
+<ResponseField name="one" type="fn one() -> Self">
+  Returns one
+</ResponseField>
+
+<ResponseField name="to_field" type="fn to_field(&self) -> Field<E>">
+  Converts to a field element
+</ResponseField>
+
+<ResponseField name="to_scalar" type="fn to_scalar(&self) -> Scalar<E>">
+  Converts to a scalar element
+</ResponseField>
+
+### Arithmetic Operations
+
+Integers support checked arithmetic:
+- Addition: `int1 + int2` (wrapping)
+- Subtraction: `int1 - int2` (wrapping)
+- Multiplication: `int1 * int2` (wrapping)
+- Division: `int1 / int2`
+- Modulo: `int1 % int2`
+- Power: `int1.pow(int2)`
+- Absolute value: `int.abs()`
+
+### Example
+
+```rust
+use snarkvm_console::types::{U8, U64, I32};
+use snarkvm_console::network::MainnetV0;
+
+type CurrentNetwork = MainnetV0;
+
+let byte = U8::<CurrentNetwork>::new(255);
+let large = U64::<CurrentNetwork>::new(1000000);
+let signed = I32::<CurrentNetwork>::new(-42);
+
+assert_eq!(*byte, 255u8);
+assert_eq!(*large, 1000000u64);
+assert_eq!(*signed, -42i32);
+```
+
+## StringType
+
+UTF-8 encoded string type.
+
+### Structure
+
+```rust
+pub struct StringType<N: Network> {
+    // Internal string representation
+}
+```
+
+### Methods
+
+<ResponseField name="from_str" type="fn from_str(s: &str) -> Result<Self>">
+  Creates a string from a &str
+</ResponseField>
+
+### Example
+
+```rust
+use snarkvm_console::types::StringType;
+use snarkvm_console::network::MainnetV0;
+
+type CurrentNetwork = MainnetV0;
+
+let string = StringType::<CurrentNetwork>::from_str("Hello, Aleo!")?;
+```
+
+## Common Traits
+
+All types implement common traits:
+
+- `FromStr` - Parse from string
+- `Display` - Convert to string
+- `FromBytes` / `ToBytes` - Binary serialization
+- `FromBits` / `ToBits` - Bit representation
+- `Serialize` / `Deserialize` - Serde support
+- `Clone`, `Debug`, `PartialEq`, `Eq`, `Hash`
+
+### Example
+
+```rust
+use std::str::FromStr;
+use snarkvm_console::types::Field;
+use snarkvm_console::network::MainnetV0;
+
+type CurrentNetwork = MainnetV0;
+
+// Parse from string
+let field = Field::<CurrentNetwork>::from_str("123field")?;
+
+// Convert to string
+let s = field.to_string();
+
+// Binary serialization
+let bytes = field.to_bytes_le()?;
+let recovered = Field::from_bytes_le(&bytes)?;
+
+// Bit representation
+let bits = field.to_bits_le();
+let recovered = Field::from_bits_le(&bits)?;
+```
+
+## Type Conversions
+
+Many conversions are available:
+
+```rust
+// Field ↔ Scalar (with validation)
+let scalar = Scalar::from_field(&field)?;
+let field = scalar.to_field();
+
+// Integer ↔ Field
+let field = integer.to_field();
+let integer = Integer::from_field(&field)?;
+
+// Group ↔ Field
+let field = group.to_field();
+let group = Group::from_field(&field)?;
+```
+
+## See Also
+
+- [Account Types](/api/console/account) - Types using these primitives
+- [Program Types](/api/console/program) - Higher-level data structures
+- [Network Module](/api/console/network) - Environment trait definitions

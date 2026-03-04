@@ -1,0 +1,393 @@
+---
+title: Working with Accounts
+description: Learn how to manage private keys, view keys, and addresses in snarkVM
+---
+
+This guide covers account management in snarkVM, including key generation, derivation, and secure storage practices.
+
+## Account Components
+
+An Aleo account consists of three cryptographic components:
+
+- **Private Key**: The secret key that controls the account
+- **View Key**: Derived from the private key, used to decrypt records
+- **Address**: The public identifier derived from the view key
+
+## Generating a New Account
+
+<Steps>
+
+### Generate a Private Key
+
+```rust
+use snarkvm_console::account::PrivateKey;
+use snarkvm_console::network::MainnetV0;
+use rand::thread_rng;
+
+type CurrentNetwork = MainnetV0;
+
+let rng = &mut thread_rng();
+
+// Generate a new private key
+let private_key = PrivateKey::<CurrentNetwork>::new(rng)?;
+
+println!("Private Key: {}", private_key);
+```
+
+### Derive the View Key
+
+```rust
+use snarkvm_console::account::ViewKey;
+
+// Derive the view key from the private key
+let view_key = ViewKey::<CurrentNetwork>::try_from(&private_key)?;
+
+println!("View Key: {}", view_key);
+```
+
+### Derive the Address
+
+```rust
+use snarkvm_console::account::Address;
+
+// Derive the address from the private key
+let address = Address::<CurrentNetwork>::try_from(&private_key)?;
+
+// Or derive from the view key
+let address_from_view_key = Address::<CurrentNetwork>::try_from(&view_key)?;
+
+assert_eq!(address, address_from_view_key);
+
+println!("Address: {}", address);
+```
+
+</Steps>
+
+## Key Formats
+
+Each key type has a specific string format:
+
+```rust
+// Private key starts with "APrivateKey1"
+let private_key_str = "APrivateKey1zkp8cC4jgHEBnbtu3xxs1Ndja2EMizcvTRDq5Nikdkukg1p";
+let private_key = PrivateKey::<CurrentNetwork>::from_str(private_key_str)?;
+
+// View key starts with "AViewKey1"
+let view_key_str = "AViewKey1n1n3ZbnVEtXVe3La2xWkUvY3EY7XaCG6RZJJ3tbvrrrD";
+let view_key = ViewKey::<CurrentNetwork>::from_str(view_key_str)?;
+
+// Address starts with "aleo1"
+let address_str = "aleo1wvgwnqvy46qq0zemj0k6sfp3zv0mp77rw97khvwuhac05yuwscxqmfyhwf";
+let address = Address::<CurrentNetwork>::from_str(address_str)?;
+```
+
+## Parsing Keys from Strings
+
+Parse keys with proper error handling:
+
+```rust
+use std::str::FromStr;
+
+match PrivateKey::<CurrentNetwork>::from_str(private_key_str) {
+    Ok(private_key) => {
+        println!("Successfully parsed private key");
+    }
+    Err(e) => {
+        eprintln!("Invalid private key: {}", e);
+        // Handle errors:
+        // - Wrong prefix
+        // - Invalid encoding
+        // - Incorrect length
+    }
+}
+```
+
+## Account Derivation Chain
+
+Understand the full derivation chain:
+
+```rust
+// Start with a seed (private key is derived from a seed field element)
+let seed = private_key.seed();
+println!("Seed: {}", seed);
+
+// The private key contains signature components
+let sk_sig = private_key.sk_sig();
+let r_sig = private_key.r_sig();
+println!("Signature secret: {}", sk_sig);
+println!("Signature randomizer: {}", r_sig);
+
+// Derive compute key (intermediate key)
+use snarkvm_console::account::ComputeKey;
+let compute_key = ComputeKey::<CurrentNetwork>::try_from(&private_key)?;
+
+// View key and address follow
+let view_key = ViewKey::try_from(&private_key)?;
+let address = Address::try_from(&compute_key)?;
+```
+
+## Signing Messages
+
+Use the private key to sign messages:
+
+```rust
+use snarkvm_console::prelude::ToBits;
+
+let rng = &mut thread_rng();
+
+// Sign a message
+let message = "Hello, Aleo!".as_bytes();
+let message_bits = message.to_bits_le();
+
+let signature = private_key.sign_bits(&message_bits, rng)?;
+
+println!("Signature: {}", signature);
+```
+
+## Verifying Signatures
+
+Verify signatures using the address:
+
+```rust
+use snarkvm_console::account::Signature;
+
+// Verify the signature
+let is_valid = signature.verify_bits(&address, &message_bits);
+
+if is_valid {
+    println!("Signature is valid!");
+} else {
+    println!("Signature is invalid!");
+}
+```
+
+## Secure Key Storage
+
+<Note>
+**Critical Security Practices**
+
+Private keys must be stored securely:
+
+- **Never** log private keys to console in production
+- **Never** commit private keys to version control
+- **Always** encrypt private keys at rest
+- **Always** use secure random number generators
+- **Consider** hardware security modules for production
+</Note>
+
+### Environment Variables
+
+Store keys in environment variables:
+
+```rust
+use std::env;
+
+// Load from environment
+let private_key_str = env::var("ALEO_PRIVATE_KEY")
+    .expect("ALEO_PRIVATE_KEY must be set");
+
+let private_key = PrivateKey::<CurrentNetwork>::from_str(&private_key_str)?;
+```
+
+### Encrypted Storage
+
+Encrypt private keys before storing:
+
+```rust
+use aes_gcm::{
+    aead::{Aead, KeyInit, OsRng},
+    Aes256Gcm, Nonce,
+};
+use std::fs;
+
+// Generate encryption key (store this securely!)
+let key = Aes256Gcm::generate_key(&mut OsRng);
+let cipher = Aes256Gcm::new(&key);
+let nonce = Nonce::from_slice(b"unique nonce");
+
+// Encrypt the private key
+let private_key_bytes = private_key.to_string().as_bytes().to_vec();
+let ciphertext = cipher.encrypt(nonce, private_key_bytes.as_ref())?;
+
+// Store encrypted key
+fs::write("encrypted_key.bin", ciphertext)?;
+
+// Later: decrypt and load
+let encrypted = fs::read("encrypted_key.bin")?;
+let decrypted = cipher.decrypt(nonce, encrypted.as_ref())?;
+let private_key_str = String::from_utf8(decrypted)?;
+let private_key = PrivateKey::<CurrentNetwork>::from_str(&private_key_str)?;
+```
+
+## Working with Multiple Accounts
+
+Manage multiple accounts:
+
+```rust
+use std::collections::HashMap;
+
+struct AccountManager<N: Network> {
+    accounts: HashMap<Address<N>, PrivateKey<N>>,
+}
+
+impl<N: Network> AccountManager<N> {
+    fn new() -> Self {
+        Self {
+            accounts: HashMap::new(),
+        }
+    }
+
+    fn add_account(&mut self, private_key: PrivateKey<N>) -> Result<Address<N>> {
+        let address = Address::try_from(&private_key)?;
+        self.accounts.insert(address, private_key);
+        Ok(address)
+    }
+
+    fn get_account(&self, address: &Address<N>) -> Option<&PrivateKey<N>> {
+        self.accounts.get(address)
+    }
+
+    fn sign_with_account(
+        &self,
+        address: &Address<N>,
+        message: &[bool],
+        rng: &mut impl Rng,
+    ) -> Result<Signature<N>> {
+        let private_key = self.accounts
+            .get(address)
+            .ok_or_else(|| anyhow!("Account not found"))?;
+        private_key.sign_bits(message, rng)
+    }
+}
+```
+
+## Deriving Graph Keys
+
+Graph keys are used for efficient record detection:
+
+```rust
+use snarkvm_console::account::GraphKey;
+
+// Derive the graph key from the view key
+let graph_key = GraphKey::<CurrentNetwork>::try_from(&view_key)?;
+
+// Get the sk_tag for record tagging
+let sk_tag = graph_key.sk_tag();
+
+println!("Graph key SK tag: {}", sk_tag);
+```
+
+## Account Serialization
+
+Serialize and deserialize keys:
+
+```rust
+use snarkvm_console::prelude::{ToBytes, FromBytes};
+
+// Serialize to bytes
+let private_key_bytes = private_key.to_bytes_le()?;
+
+// Deserialize from bytes
+let loaded_private_key = PrivateKey::<CurrentNetwork>::read_le(&private_key_bytes[..])?;
+
+assert_eq!(private_key, loaded_private_key);
+```
+
+## Zeroizing Sensitive Data
+
+snarkVM uses the `zeroize` crate to clear sensitive data:
+
+```rust
+use zeroize::Zeroize;
+
+{
+    let mut private_key = PrivateKey::<CurrentNetwork>::new(rng)?;
+    
+    // Use the private key
+    let address = Address::try_from(&private_key)?;
+    
+    // Zeroize when done
+    private_key.zeroize();
+    // Memory is now cleared
+}
+```
+
+## Testing Accounts
+
+For testing, use deterministic keys:
+
+```rust
+use snarkvm_console::prelude::TestRng;
+
+let mut test_rng = TestRng::default();
+
+// Generate deterministic test keys
+let test_private_key = PrivateKey::<CurrentNetwork>::new(&mut test_rng)?;
+let test_address = Address::try_from(&test_private_key)?;
+
+println!("Test address: {}", test_address);
+```
+
+## Common Patterns
+
+### Loading Account from File
+
+```rust
+use std::fs;
+
+fn load_account_from_file(path: &str) -> Result<PrivateKey<CurrentNetwork>> {
+    let content = fs::read_to_string(path)?;
+    let private_key = PrivateKey::<CurrentNetwork>::from_str(content.trim())?;
+    Ok(private_key)
+}
+```
+
+### Deriving Child Accounts
+
+For deterministic wallet generation:
+
+```rust
+use snarkvm_console::types::Field;
+use snarkvm_algorithms::crypto_hash::Poseidon;
+
+fn derive_child_account(
+    parent_private_key: &PrivateKey<CurrentNetwork>,
+    index: u32,
+) -> Result<PrivateKey<CurrentNetwork>> {
+    // Get parent seed
+    let parent_seed = parent_private_key.seed();
+    
+    // Hash with index to derive child seed
+    let index_field = Field::<CurrentNetwork>::from_u32(index);
+    let mut hasher = Poseidon::<CurrentNetwork>::setup()?;
+    hasher.update(&[parent_seed, index_field]);
+    let child_seed = hasher.finalize()?;
+    
+    // Create child key from seed
+    PrivateKey::<CurrentNetwork>::try_from(child_seed)
+}
+```
+
+## Error Handling
+
+Handle account-related errors properly:
+
+```rust
+fn parse_account(key_str: &str) -> Result<(PrivateKey<CurrentNetwork>, Address<CurrentNetwork>)> {
+    // Parse private key
+    let private_key = PrivateKey::<CurrentNetwork>::from_str(key_str)
+        .map_err(|e| anyhow!("Invalid private key: {}", e))?;
+    
+    // Derive address
+    let address = Address::<CurrentNetwork>::try_from(&private_key)
+        .map_err(|e| anyhow!("Failed to derive address: {}", e))?;
+    
+    Ok((private_key, address))
+}
+```
+
+## Next Steps
+
+- Learn about [executing transactions](/guides/executing-transactions) with your accounts
+- Explore [managing records](/guides/managing-records) owned by your accounts
+- Understand [deploying programs](/guides/deploying-programs) using your private key

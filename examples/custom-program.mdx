@@ -1,0 +1,277 @@
+---
+title: Custom program example
+description: Create and execute a custom Aleo program
+---
+
+This example shows how to write a custom Aleo program, deploy it to the VM, and execute its functions using SnarkVM.
+
+## The program
+
+We'll create a simple program that performs basic arithmetic with private values:
+
+```aleo
+program calculator.aleo;
+
+function add:
+    input r0 as u64.private;
+    input r1 as u64.private;
+    add r0 r1 into r2;
+    output r2 as u64.private;
+
+function multiply:
+    input r0 as u64.private;
+    input r1 as u64.private;
+    mul r0 r1 into r2;
+    output r2 as u64.private;
+
+function square:
+    input r0 as u64.private;
+    mul r0 r0 into r1;
+    output r1 as u64.private;
+```
+
+## Complete example
+
+```rust
+use snarkvm::{
+    prelude::*,
+    ledger::store::ConsensusStore,
+};
+use rand::thread_rng;
+
+fn main() -> Result<()> {
+    // Parse the program
+    let program_string = r#"
+program calculator.aleo;
+
+function add:
+    input r0 as u64.private;
+    input r1 as u64.private;
+    add r0 r1 into r2;
+    output r2 as u64.private;
+
+function multiply:
+    input r0 as u64.private;
+    input r1 as u64.private;
+    mul r0 r1 into r2;
+    output r2 as u64.private;
+    "#;
+    
+    let program = Program::<Testnet3>::from_str(program_string)?;
+    println!("Program ID: {}", program.id());
+    
+    // Initialize VM
+    let store = ConsensusStore::<Testnet3, ConsensusMemory<Testnet3>>::open(
+        Some(aleo_std::StorageMode::Development(0))
+    )?;
+    let vm = VM::from(store)?;
+    
+    // Generate account
+    let private_key = PrivateKey::<Testnet3>::new(&mut thread_rng())?;
+    
+    // Deploy the program
+    println!("\nDeploying program...");
+    let deployment = vm.deploy(
+        &private_key,
+        &program,
+        None,  // No fee record
+        0,     // Zero priority fee  
+        None,  // No query
+        &mut thread_rng()
+    )?;
+    println!("Deployment ID: {}", deployment.id());
+    
+    // Execute the add function
+    println!("\nExecuting add(5, 7)...");
+    let inputs = [
+        Value::from_str("5u64")?,
+        Value::from_str("7u64")?,
+    ];
+    
+    let transaction = vm.execute(
+        &private_key,
+        ("calculator.aleo", "add"),
+        inputs.iter(),
+        None,
+        0,
+        None,
+        &mut thread_rng()
+    )?;
+    
+    println!("Transaction ID: {}", transaction.id());
+    println!("Result: 5 + 7 = 12 (computed privately!)");
+    
+    // Execute the multiply function
+    println!("\nExecuting multiply(6, 8)...");
+    let inputs = [
+        Value::from_str("6u64")?,
+        Value::from_str("8u64")?,
+    ];
+    
+    let transaction = vm.execute(
+        &private_key,
+        ("calculator.aleo", "multiply"),
+        inputs.iter(),
+        None,
+        0,
+        None,
+        &mut thread_rng()
+    )?;
+    
+    println!("Transaction ID: {}", transaction.id());
+    println!("Result: 6 × 8 = 48 (computed privately!)");
+    
+    Ok(())
+}
+```
+
+## Step by step
+
+<Steps>
+  <Step title="Write the program">
+    ```aleo
+    program calculator.aleo;
+    
+    function add:
+        input r0 as u64.private;
+        input r1 as u64.private;
+        add r0 r1 into r2;
+        output r2 as u64.private;
+    ```
+    
+    Aleo programs use a simple assembly-like syntax. Each function:
+    - Declares inputs with types and visibility (`.private` or `.public`)
+    - Performs operations using registers (`r0`, `r1`, etc.)
+    - Returns outputs with types and visibility
+  </Step>
+  
+  <Step title="Parse the program">
+    ```rust
+    let program = Program::<Testnet3>::from_str(program_string)?;
+    ```
+    
+    Parse the program string into a `Program` object. This validates the syntax and generates the program ID.
+  </Step>
+  
+  <Step title="Deploy the program">
+    ```rust
+    let deployment = vm.deploy(
+        &private_key,
+        &program,
+        None,
+        0,
+        None,
+        &mut thread_rng()
+    )?;
+    ```
+    
+    Deploy the program to the VM. This makes it available for execution.
+  </Step>
+  
+  <Step title="Execute functions">
+    ```rust
+    let inputs = [
+        Value::from_str("5u64")?,
+        Value::from_str("7u64")?,
+    ];
+    
+    let transaction = vm.execute(
+        &private_key,
+        ("calculator.aleo", "add"),
+        inputs.iter(),
+        None,
+        0,
+        None,
+        &mut thread_rng()
+    )?;
+    ```
+    
+    Execute the deployed function with inputs. The VM generates a zero-knowledge proof that the computation was performed correctly.
+  </Step>
+</Steps>
+
+## Program features
+
+### Data types
+
+Aleo supports these primitive types:
+
+- Integers: `u8`, `u16`, `u32`, `u64`, `u128`, `i8`, `i16`, `i32`, `i64`, `i128`
+- Field elements: `field`, `group`, `scalar`
+- Boolean: `boolean`
+- Address: `address`
+- Signature: `signature`
+
+### Visibility modifiers
+
+- `.private` - Hidden from public view, proven in zero-knowledge
+- `.public` - Visible on the blockchain
+- `.record` - Private state with ownership
+
+### Operations
+
+Common operations available:
+
+- Arithmetic: `add`, `sub`, `mul`, `div`, `rem`
+- Bitwise: `and`, `or`, `xor`, `shl`, `shr`
+- Comparison: `lt`, `lte`, `gt`, `gte`
+- Logical: `and`, `or`, `not`
+- Cryptographic: `hash.bhp256`, `commit.bhp256`, `sign.verify`
+
+## Advanced example: Working with structs
+
+```aleo
+program geometry.aleo;
+
+struct Point:
+    x as u64;
+    y as u64;
+
+function distance_squared:
+    input r0 as Point.private;
+    input r1 as Point.private;
+    // Calculate (x2-x1)^2
+    sub r1.x r0.x into r2;
+    mul r2 r2 into r3;
+    // Calculate (y2-y1)^2
+    sub r1.y r0.y into r4;
+    mul r4 r4 into r5;
+    // Add them
+    add r3 r5 into r6;
+    output r6 as u64.private;
+```
+
+Execute with struct inputs:
+
+```rust
+let inputs = [
+    Value::from_str("{ x: 0u64, y: 0u64 }")?,  // Origin
+    Value::from_str("{ x: 3u64, y: 4u64 }")?,  // Point (3,4)
+];
+
+let transaction = vm.execute(
+    &private_key,
+    ("geometry.aleo", "distance_squared"),
+    inputs.iter(),
+    None,
+    0,
+    None,
+    &mut thread_rng()
+)?;
+// Result: 3² + 4² = 25
+```
+
+<Note>
+  All computation is performed privately. The inputs, outputs, and intermediate values are hidden using zero-knowledge proofs.
+</Note>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Proof verification" icon="shield-check" href="/examples/proof-verification">
+    Learn about zero-knowledge proof generation
+  </Card>
+  <Card title="Creating programs" icon="code" href="/guides/creating-programs">
+    Deep dive into Aleo program development
+  </Card>
+</CardGroup>

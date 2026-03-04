@@ -1,0 +1,598 @@
+---
+title: Parallel Execution
+description: Parallel processing utilities and macros for efficient computation
+---
+
+The parallel execution module provides utilities and macros for conditional parallelization. Code written with these macros automatically adapts to be parallel or serial based on feature flags.
+
+## Feature-Based Parallelism
+
+The parallel module behavior is controlled by the `serial` feature flag:
+
+```toml
+# Parallel execution (default)
+[dependencies]
+snarkvm-utilities = "*"
+
+# Serial execution (no parallelism)
+[dependencies]
+snarkvm-utilities = { version = "*", features = ["serial"] }
+```
+
+**When `serial` is NOT enabled:**
+- Uses [Rayon](https://github.com/rayon-rs/rayon) for parallel execution
+- Automatically utilizes multiple CPU cores
+- Best for production and performance-critical code
+
+**When `serial` IS enabled:**
+- Falls back to standard sequential iterators
+- Single-threaded execution
+- Best for testing, debugging, and WebAssembly
+
+## Core Macros
+
+### `cfg_iter!`
+
+Creates a parallel or serial iterator over references.
+
+```rust
+use snarkvm_utilities::cfg_iter;
+
+let data = vec![1, 2, 3, 4, 5];
+
+// Automatically parallel or serial based on features
+let doubled: Vec<_> = cfg_iter!(data)
+    .map(|x| x * 2)
+    .collect();
+
+assert_eq!(doubled, vec![2, 4, 6, 8, 10]);
+```
+
+**Expands to:**
+```rust
+// Without serial feature
+data.par_iter().map(|x| x * 2).collect()
+
+// With serial feature
+data.iter().map(|x| x * 2).collect()
+```
+
+### `cfg_iter!` with Minimum Length
+
+Control the minimum chunk size for parallel execution:
+
+```rust
+use snarkvm_utilities::cfg_iter;
+
+// Only parallelize if chunks are at least 100 items
+let result: Vec<_> = cfg_iter!(large_data, 100)
+    .map(|item| process(item))
+    .collect();
+```
+
+This avoids parallelization overhead for small tasks.
+
+### `cfg_iter_mut!`
+
+Creates a parallel or serial iterator over mutable references.
+
+```rust
+use snarkvm_utilities::cfg_iter_mut;
+
+let mut data = vec![1, 2, 3, 4, 5];
+
+// Mutate in parallel
+cfg_iter_mut!(data).for_each(|x| *x *= 2);
+
+assert_eq!(data, vec![2, 4, 6, 8, 10]);
+```
+
+### `cfg_into_iter!`
+
+Creates a parallel or serial consuming iterator.
+
+```rust
+use snarkvm_utilities::cfg_into_iter;
+
+let data = vec![1, 2, 3, 4, 5];
+
+// Consume and transform
+let owned: Vec<_> = cfg_into_iter!(data)
+    .map(|x| x * 2)
+    .collect();
+
+assert_eq!(owned, vec![2, 4, 6, 8, 10]);
+```
+
+### `cfg_chunks!`
+
+Iterates over fixed-size chunks.
+
+```rust
+use snarkvm_utilities::cfg_chunks;
+
+let data = vec![1, 2, 3, 4, 5, 6, 7, 8];
+
+// Process in chunks of 2
+let sum_of_chunks: Vec<_> = cfg_chunks!(data, 2)
+    .map(|chunk| chunk.iter().sum::<i32>())
+    .collect();
+
+assert_eq!(sum_of_chunks, vec![3, 7, 11, 15]);
+```
+
+### `cfg_chunks_mut!`
+
+Iterates over mutable fixed-size chunks.
+
+```rust
+use snarkvm_utilities::cfg_chunks_mut;
+
+let mut data = vec![1, 2, 3, 4, 5, 6];
+
+// Double each chunk
+cfg_chunks_mut!(data, 2).for_each(|chunk| {
+    for x in chunk {
+        *x *= 2;
+    }
+});
+
+assert_eq!(data, vec![2, 4, 6, 8, 10, 12]);
+```
+
+## Collection Macros
+
+### `cfg_keys!`
+
+Iterates over keys in a map.
+
+```rust
+use snarkvm_utilities::cfg_keys;
+use indexmap::IndexMap;
+
+let mut map = IndexMap::new();
+map.insert("a", 1);
+map.insert("b", 2);
+map.insert("c", 3);
+
+let keys: Vec<_> = cfg_keys!(map).cloned().collect();
+assert!(keys.contains(&"a"));
+```
+
+### `cfg_values!`
+
+Iterates over values in a map.
+
+```rust
+use snarkvm_utilities::cfg_values;
+use indexmap::IndexMap;
+
+let mut map = IndexMap::new();
+map.insert("a", 1);
+map.insert("b", 2);
+map.insert("c", 3);
+
+let sum: i32 = cfg_values!(map).sum();
+assert_eq!(sum, 6);
+```
+
+## Reduction Macros
+
+### `cfg_reduce!`
+
+Applies a reduction operation.
+
+```rust
+use snarkvm_utilities::cfg_reduce;
+
+let data = vec![1, 2, 3, 4, 5];
+
+// Sum all elements
+let sum = cfg_reduce!(
+    cfg_iter!(data),
+    || 0,              // Identity function
+    |acc, x| acc + x   // Reduction function
+);
+
+assert_eq!(sum, 15);
+```
+
+### `cfg_reduce_with!`
+
+Reduces with a binary operation (no identity needed).
+
+```rust
+use snarkvm_utilities::cfg_reduce_with;
+
+let data = vec![1, 2, 3, 4, 5];
+
+let result = cfg_reduce_with!(
+    cfg_iter!(data),
+    |a, b| a + b
+);
+
+assert_eq!(result, Some(15));
+```
+
+Returns `Option` because the collection might be empty.
+
+## Search Macros
+
+### `cfg_find!`
+
+Finds an element matching a predicate.
+
+```rust
+use snarkvm_utilities::cfg_find;
+use indexmap::IndexMap;
+
+let mut map = IndexMap::new();
+map.insert("a", 1);
+map.insert("b", 2);
+map.insert("c", 3);
+
+let found = cfg_find!(map, |&x| x > 2);
+assert_eq!(found, Some(&3));
+```
+
+**Note:** Returns at most one match, not necessarily the first in parallel mode.
+
+### `cfg_find_map!`
+
+Finds and transforms an element.
+
+```rust
+use snarkvm_utilities::cfg_find_map;
+use indexmap::IndexMap;
+
+let mut map = IndexMap::new();
+map.insert("a", 1);
+map.insert("b", 2);
+map.insert("c", 3);
+
+let found = cfg_find_map!(map, |&x| {
+    if x > 2 {
+        Some(x * 10)
+    } else {
+        None
+    }
+});
+
+assert_eq!(found, Some(30));
+```
+
+## Sorting Macros
+
+### `cfg_sort_unstable_by!`
+
+Sorts a slice using an unstable sort.
+
+```rust
+use snarkvm_utilities::cfg_sort_unstable_by;
+
+let mut data = vec![3, 1, 4, 1, 5, 9, 2, 6];
+
+cfg_sort_unstable_by!(data, |a, b| a.cmp(b));
+
+assert_eq!(data, vec![1, 1, 2, 3, 4, 5, 6, 9]);
+```
+
+### `cfg_sort_by_cached_key!`
+
+Sorts using a cached key function.
+
+```rust
+use snarkvm_utilities::cfg_sort_by_cached_key;
+
+let mut data = vec!["hello", "world", "foo", "bar"];
+
+// Sort by length (key is cached)
+cfg_sort_by_cached_key!(data, |s| s.len());
+
+assert_eq!(data, vec!["foo", "bar", "hello", "world"]);
+```
+
+## ExecutionPool
+
+For dynamic job scheduling, use `ExecutionPool`:
+
+```rust
+use snarkvm_utilities::ExecutionPool;
+
+let mut pool = ExecutionPool::new();
+
+// Add jobs dynamically
+for i in 0..10 {
+    pool.add_job(move || i * i);
+}
+
+// Execute all jobs (potentially in parallel)
+let results = pool.execute_all();
+
+assert_eq!(results.len(), 10);
+assert!(results.contains(&0));  // 0 * 0
+assert!(results.contains(&81)); // 9 * 9
+```
+
+### With Capacity
+
+Pre-allocate for better performance:
+
+```rust
+use snarkvm_utilities::ExecutionPool;
+
+let mut pool = ExecutionPool::with_capacity(100);
+
+for i in 0..100 {
+    pool.add_job(move || expensive_computation(i));
+}
+
+let results = pool.execute_all();
+```
+
+## CPU Detection
+
+The module detects CPU type to optimize thread usage.
+
+### `max_available_threads()`
+
+Returns the optimal number of threads for the current CPU.
+
+```rust
+#[cfg(not(feature = "serial"))]
+use snarkvm_utilities::max_available_threads;
+
+let thread_count = max_available_threads();
+println!("Using {} threads for parallel execution", thread_count);
+```
+
+**CPU-specific behavior:**
+
+**Intel CPUs:**
+- Returns physical core count
+- Avoids hyperthreading overhead
+- Better for CPU-intensive cryptographic operations
+
+**AMD CPUs:**
+- Returns all available threads
+- Leverages simultaneous multithreading (SMT)
+- Better overall throughput
+
+**Unknown CPUs:**
+- Returns all available threads
+- Safe default
+
+### `execute_with_max_available_threads()`
+
+Executes a closure with optimal thread count.
+
+```rust
+#[cfg(not(feature = "serial"))]
+use snarkvm_utilities::execute_with_max_available_threads;
+
+let result = execute_with_max_available_threads(|| {
+    // This closure runs in a thread pool
+    expensive_parallel_computation()
+});
+```
+
+Automatically creates a thread pool if not already in one.
+
+## Common Patterns
+
+### Parallel Map
+
+```rust
+use snarkvm_utilities::cfg_iter;
+
+let data = vec![1, 2, 3, 4, 5];
+
+let results: Vec<_> = cfg_iter!(data)
+    .map(|x| x * x)
+    .collect();
+
+assert_eq!(results, vec![1, 4, 9, 16, 25]);
+```
+
+### Parallel Filter
+
+```rust
+use snarkvm_utilities::cfg_iter;
+
+let data = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+
+let evens: Vec<_> = cfg_iter!(data)
+    .filter(|x| *x % 2 == 0)
+    .cloned()
+    .collect();
+
+assert_eq!(evens, vec![2, 4, 6, 8, 10]);
+```
+
+### Parallel Filter-Map
+
+```rust
+use snarkvm_utilities::cfg_iter;
+
+let data = vec!["1", "2", "three", "4", "5"];
+
+let numbers: Vec<_> = cfg_iter!(data)
+    .filter_map(|s| s.parse::<i32>().ok())
+    .collect();
+
+assert_eq!(numbers, vec![1, 2, 4, 5]);
+```
+
+### Parallel Sum
+
+```rust
+use snarkvm_utilities::cfg_iter;
+
+let data = vec![1, 2, 3, 4, 5];
+
+let sum: i32 = cfg_iter!(data).sum();
+assert_eq!(sum, 15);
+```
+
+### Parallel Validation
+
+```rust
+use snarkvm_utilities::cfg_iter;
+
+let data = vec![1, 2, 3, 4, 5];
+
+let all_positive = cfg_iter!(data).all(|x| *x > 0);
+assert!(all_positive);
+
+let any_negative = cfg_iter!(data).any(|x| *x < 0);
+assert!(!any_negative);
+```
+
+### Parallel Try-Map
+
+```rust
+use snarkvm_utilities::cfg_iter;
+
+let data = vec!["1", "2", "3", "4", "5"];
+
+let numbers: Result<Vec<_>, _> = cfg_iter!(data)
+    .map(|s| s.parse::<i32>())
+    .collect();
+
+assert!(numbers.is_ok());
+```
+
+## Performance Guidelines
+
+### When to Use Parallelism
+
+**Good candidates for parallelization:**
+- Large datasets (>1000 items)
+- CPU-intensive operations per item
+- Independent computations (no shared state)
+- Cryptographic operations (hashing, signatures, proofs)
+
+**Poor candidates for parallelization:**
+- Small datasets (&lt;100 items)
+- I/O-bound operations
+- Operations with heavy synchronization
+- Very fast operations (overhead dominates)
+
+### Example: Choosing Serial vs Parallel
+
+```rust
+use snarkvm_utilities::cfg_iter;
+
+// Small dataset: overhead may not be worth it
+let small_data = vec![1, 2, 3, 4, 5];
+let result: Vec<_> = small_data.iter().map(|x| x * 2).collect();
+
+// Large dataset: parallelism helps
+let large_data = vec![0; 1_000_000];
+let result: Vec<_> = cfg_iter!(large_data)
+    .map(|x| expensive_operation(x))
+    .collect();
+```
+
+### Minimum Length Tuning
+
+Use minimum length to avoid over-parallelization:
+
+```rust
+use snarkvm_utilities::cfg_iter;
+
+// Only create parallel tasks if chunks are at least 1000 items
+let result: Vec<_> = cfg_iter!(data, 1000)
+    .map(|item| process(item))
+    .collect();
+```
+
+## Testing with Serial Mode
+
+For deterministic tests, enable serial mode:
+
+```bash
+cargo test --features serial
+```
+
+This ensures:
+- Deterministic execution order
+- Easier debugging
+- No race conditions in tests
+
+## WebAssembly Support
+
+For WebAssembly targets, always use serial mode:
+
+```toml
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+snarkvm-utilities = { version = "*", features = ["serial", "wasm"] }
+```
+
+WebAssembly has limited threading support, so serial execution is required.
+
+## Example: Parallel Proof Verification
+
+```rust
+use snarkvm_utilities::cfg_iter;
+use anyhow::Result;
+
+fn verify_proofs_parallel(proofs: &[Proof]) -> Result<bool> {
+    // Verify all proofs in parallel
+    let results: Vec<_> = cfg_iter!(proofs)
+        .map(|proof| proof.verify())
+        .collect();
+    
+    // Check if all succeeded
+    Ok(results.into_iter().all(|r| r.is_ok()))
+}
+
+// Usage
+let proofs = generate_proofs();
+let all_valid = verify_proofs_parallel(&proofs)?;
+assert!(all_valid);
+```
+
+## Example: Parallel Batch Processing
+
+```rust
+use snarkvm_utilities::{cfg_chunks, cfg_iter};
+
+// Process 1 million items in batches of 1000
+let data = vec![0; 1_000_000];
+
+let results: Vec<_> = cfg_chunks!(data, 1000)
+    .map(|chunk| {
+        // Process each chunk
+        chunk.iter().map(|x| process(*x)).sum::<u64>()
+    })
+    .collect();
+
+assert_eq!(results.len(), 1000);
+```
+
+## Example: Dynamic Job Scheduling
+
+```rust
+use snarkvm_utilities::ExecutionPool;
+
+// Create pool
+let mut pool = ExecutionPool::with_capacity(transactions.len());
+
+// Add verification jobs
+for tx in transactions {
+    pool.add_job(move || verify_transaction(&tx));
+}
+
+// Execute all verifications (potentially in parallel)
+let results = pool.execute_all();
+
+// Check results
+let all_valid = results.into_iter().all(|r| r);
+assert!(all_valid);
+```
+
+## Next Steps
+
+- [Utilities Overview](/api/utilities/overview) - Overview of all utility modules
+- [Serialization](/api/utilities/serialization) - Canonical serialization traits

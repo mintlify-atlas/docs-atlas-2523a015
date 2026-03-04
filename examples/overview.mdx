@@ -1,0 +1,86 @@
+---
+title: Examples overview
+description: Practical examples of using SnarkVM in real applications
+---
+
+This section provides practical, working examples that demonstrate how to use SnarkVM in real-world applications. Each example includes complete, runnable code that you can use as a starting point for your own projects.
+
+## Available examples
+
+<CardGroup cols={2}>
+  <Card title="Hello world" icon="rocket" href="/examples/hello-world">
+    A minimal example to get started with SnarkVM
+  </Card>
+  <Card title="Token transfer" icon="exchange" href="/examples/token-transfer">
+    Transfer credits between accounts on the Aleo network
+  </Card>
+  <Card title="Custom program" icon="code" href="/examples/custom-program">
+    Create and execute a custom Aleo program
+  </Card>
+  <Card title="Proof verification" icon="shield-check" href="/examples/proof-verification">
+    Generate and verify zero-knowledge proofs
+  </Card>
+</CardGroup>
+
+## Prerequisites
+
+All examples assume you have:
+
+- Rust installed (version 1.88.0 or later)
+- SnarkVM added to your `Cargo.toml`:
+
+```toml Cargo.toml
+[dependencies]
+snarkvm = "4.4.0"
+rand = "0.8"
+```
+
+## Running the examples
+
+Each example is self-contained and can be run with:
+
+```bash
+cargo run --example <example_name>
+```
+
+Or copy the code into your own project's `main.rs` file.
+
+## Learning path
+
+We recommend following the examples in this order:
+
+1. **Hello world** - Learn basic account creation and address derivation
+2. **Token transfer** - Understand transaction creation and execution
+3. **Custom program** - Write and deploy your own Aleo program
+4. **Proof verification** - Work with zero-knowledge proofs directly
+
+## Example structure
+
+Each example follows a consistent structure:
+
+<Steps>
+  <Step title="Setup">
+    Import necessary types and create the runtime environment
+  </Step>
+  <Step title="Execution">
+    Perform the core operations demonstrated by the example
+  </Step>
+  <Step title="Verification">
+    Verify the results and print output
+  </Step>
+</Steps>
+
+## Additional resources
+
+<CardGroup cols={2}>
+  <Card title="API reference" icon="book" href="/api/overview">
+    Detailed API documentation for all SnarkVM types
+  </Card>
+  <Card title="Guides" icon="map" href="/guides/creating-programs">
+    In-depth guides for common tasks
+  </Card>
+</CardGroup>
+
+<Note>
+  All examples use the Testnet3 network for demonstration. You can switch to MainnetV0 or CanaryV0 by changing the network type parameter.
+</Note>

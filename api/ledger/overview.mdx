@@ -1,0 +1,327 @@
+---
+title: Ledger Overview
+description: Core ledger crate providing blockchain state management and block processing
+---
+
+The `snarkvm-ledger` crate is the central blockchain state manager in SnarkVM. It maintains the entire chain state, processes blocks and transactions, and provides querying capabilities.
+
+## Architecture
+
+The ledger is composed of several key modules:
+
+- **Block**: Block, Header, Transaction, and Transition types
+- **Store**: Persistent storage layer with consensus store
+- **Query**: Query trait for state access
+- **Authority**: Block authority (Beacon or Quorum)
+- **Committee**: Validator committee management
+- **Narwhal**: Consensus protocol implementation
+- **Puzzle**: Proof-of-work puzzle for coinbase
+
+## Core Type: Ledger
+
+The `Ledger<N, C>` type is the main entry point for blockchain state management.
+
+```rust
+pub struct Ledger<N: Network, C: ConsensusStorage<N>>
+```
+
+### Type Parameters
+
+- `N: Network` - The network type (e.g., MainnetV0)
+- `C: ConsensusStorage<N>` - The storage backend implementation
+
+### Inner Structure
+
+The ledger maintains:
+
+- **VM state**: The underlying virtual machine with program execution
+- **Genesis block**: The initial block of the chain
+- **Current committee**: The active validator committee
+- **Current block**: Latest added block (cached)
+- **Current epoch hash**: Hash for the current epoch
+- **Committee cache**: LRU cache of recent committees (size: 16)
+- **Epoch provers cache**: Solution counts per prover in current epoch
+
+## Loading the Ledger
+
+### `Ledger::load`
+
+Loads the ledger from storage with integrity checks.
+
+```rust
+pub fn load(
+    genesis_block: Block<N>,
+    storage_mode: StorageMode
+) -> Result<Self>
+```
+
+**Parameters:**
+- `genesis_block` - The genesis block to verify against
+- `storage_mode` - Storage configuration (see [Storage Modes](#storage-modes))
+
+**Returns:**
+- `Result<Ledger<N, C>>` - The loaded ledger or an error
+
+**Behavior:**
+1. Initializes the consensus store with the given storage mode
+2. Creates a new VM from the store
+3. Verifies the genesis block hash matches storage
+4. Spot-checks up to 10 random blocks for integrity
+5. Loads the current committee, block, and epoch state
+
+**Example:**
+
+```rust
+use snarkvm_ledger::prelude::*;
+use aleo_std::StorageMode;
+
+// Load ledger with development storage
+let genesis = Block::genesis()?;
+let ledger = Ledger::load(genesis, StorageMode::Development(0))?;
+```
+
+### `Ledger::load_unchecked`
+
+Loads the ledger without performing integrity checks.
+
+```rust
+pub fn load_unchecked(
+    genesis_block: Block<N>,
+    storage_mode: StorageMode
+) -> Result<Self>
+```
+
+This method skips the random block verification and is faster for trusted environments.
+
+## Advancing the Ledger
+
+### `advance_to_next_block`
+
+Adds the next block to the ledger.
+
+```rust
+pub fn advance_to_next_block(&self, block: &Block<N>) -> Result<()>
+```
+
+**Thread Safety:**
+This method is atomic and thread-safe. Only one advancement can occur at a time, and no reads execute during advancement.
+
+**Parameters:**
+- `block` - The next block to add (must be height + 1)
+
+**Side Effects:**
+1. Acquires write lock on `current_block`
+2. Validates block height is sequential
+3. Calls `VM::add_next_block` to update storage
+4. Updates current block, committee, and epoch state
+5. Clears or updates epoch provers cache
+
+**Example:**
+
+```rust
+// Prepare the next block
+let next_block = ledger.prepare_advance_to_next_quorum_block(
+    subdag,
+    transmissions,
+    &mut rng
+)?;
+
+// Add it to the ledger
+ledger.advance_to_next_block(&next_block)?;
+```
+
+### `prepare_advance_to_next_quorum_block`
+
+Prepares a candidate quorum block using a committed subdag.
+
+```rust
+pub fn prepare_advance_to_next_quorum_block<R: Rng + CryptoRng>(
+    &self,
+    subdag: Subdag<N>,
+    transmissions: IndexMap<TransmissionID<N>, Transmission<N>>,
+    rng: &mut R,
+) -> Result<Block<N>, CheckBlockError<N>>
+```
+
+**Parameters:**
+- `subdag` - The committed subdag from consensus
+- `transmissions` - Solutions and transactions from the subdag
+- `rng` - Random number generator
+
+**Returns:**
+A candidate block that can be passed to `advance_to_next_block`
+
+### `prepare_advance_to_next_beacon_block`
+
+Prepares a candidate beacon block (for testing).
+
+```rust
+pub fn prepare_advance_to_next_beacon_block<R: Rng + CryptoRng>(
+    &self,
+    private_key: &PrivateKey<N>,
+    candidate_ratifications: Vec<Ratify<N>>,
+    candidate_solutions: Vec<Solution<N>>,
+    candidate_transactions: Vec<Transaction<N>>,
+    rng: &mut R,
+) -> Result<Block<N>, CheckBlockError<N>>
+```
+
+**Note:** Beacon blocks are only used for testing. Production uses quorum blocks.
+
+## Querying State
+
+The ledger provides extensive query methods:
+
+### Latest State
+
+```rust
+// Latest block information
+pub fn latest_block(&self) -> Block<N>
+pub fn latest_height(&self) -> u32
+pub fn latest_round(&self) -> u64
+pub fn latest_hash(&self) -> N::BlockHash
+pub fn latest_header(&self) -> Header<N>
+pub fn latest_timestamp(&self) -> i64
+
+// Latest roots and targets
+pub fn latest_state_root(&self) -> N::StateRoot
+pub fn latest_epoch_hash(&self) -> Result<N::BlockHash>
+pub fn latest_committee(&self) -> Result<Committee<N>>
+pub fn latest_coinbase_target(&self) -> u64
+pub fn latest_proof_target(&self) -> u64
+```
+
+### Historical Access
+
+```rust
+// Blocks
+pub fn get_block(&self, height: u32) -> Result<Block<N>>
+pub fn contains_block_hash(&self, block_hash: &N::BlockHash) -> Result<bool>
+
+// State roots
+pub fn get_state_root(&self, block_height: u32) -> Result<Option<N::StateRoot>>
+pub fn get_state_path_for_commitment(
+    &self,
+    commitment: &Field<N>
+) -> Result<StatePath<N>>
+
+// Committees
+pub fn get_committee(&self, block_height: u32) -> Result<Option<Committee<N>>>
+pub fn get_committee_for_round(&self, round: u64) -> Result<Option<Committee<N>>>
+
+// Epoch information
+pub fn get_epoch_hash(&self, block_height: u32) -> Result<N::BlockHash>
+```
+
+## Storage Modes
+
+The ledger supports multiple storage backends configured via `StorageMode`:
+
+```rust
+use aleo_std::StorageMode;
+
+// Development mode (in-memory)
+let dev_storage = StorageMode::Development(0);
+
+// Production mode (RocksDB)
+let prod_storage = StorageMode::Production;
+
+// Custom path
+let custom_storage = StorageMode::Custom("path/to/ledger".into());
+```
+
+**Modes:**
+
+- **`Development(id)`**: In-memory storage, useful for testing. The `id` allows multiple independent ledgers.
+- **`Production`**: Persistent RocksDB storage in the default data directory.
+- **`Custom(path)`**: Persistent RocksDB storage at a custom path.
+
+## Transaction Creation
+
+The ledger provides convenience methods for creating common transactions:
+
+### `create_deploy`
+
+Creates a program deployment transaction.
+
+```rust
+pub fn create_deploy<R: Rng + CryptoRng>(
+    &self,
+    private_key: &PrivateKey<N>,
+    program: &Program<N>,
+    priority_fee_in_microcredits: u64,
+    query: Option<&dyn QueryTrait<N>>,
+    rng: &mut R,
+) -> Result<Transaction<N>, CreateDeployError>
+```
+
+### `create_transfer`
+
+Creates a private-to-private transfer transaction.
+
+```rust
+pub fn create_transfer<R: Rng + CryptoRng>(
+    &self,
+    private_key: &PrivateKey<N>,
+    to: Address<N>,
+    amount_in_microcredits: u64,
+    priority_fee_in_microcredits: u64,
+    query: Option<&dyn QueryTrait<N>>,
+    rng: &mut R,
+) -> Result<Transaction<N>, CreateTransferError>
+```
+
+## VM Access
+
+Access the underlying VM for program operations:
+
+```rust
+pub fn vm(&self) -> &VM<N, C>
+pub fn puzzle(&self) -> &Puzzle<N>
+```
+
+## Caching
+
+The ledger maintains several caches for performance:
+
+- **Committee Cache**: LRU cache of 16 recent committees by round
+- **Epoch Provers Cache**: Tracks solution counts per prover in the current epoch
+- **Block Cache**: Optional block cache in the block store (configurable size)
+
+```rust
+// Get the block cache size (if enabled)
+pub fn block_cache_size(&self) -> Option<u32>
+
+// Access epoch provers
+pub fn epoch_provers(&self) -> Arc<RwLock<IndexMap<Address<N>, u32>>>
+```
+
+## Database Operations
+
+### Backup (RocksDB only)
+
+Create a checkpoint of the ledger database:
+
+```rust
+#[cfg(feature = "rocks")]
+pub fn backup_database<P: AsRef<Path>>(&self, path: P) -> Result<()>
+```
+
+Checkpoints use hard links and can serve as incremental backups or full rollback points.
+
+### Block Tree Caching (RocksDB only)
+
+Cache the block tree to disk for faster startup:
+
+```rust
+#[cfg(feature = "rocks")]
+pub fn cache_block_tree(&self) -> Result<()>
+```
+
+The block tree is automatically cached on ledger drop for clean shutdowns.
+
+## Next Steps
+
+- [Block Types](/api/ledger/block) - Block, Header, Transaction, and Transition structures
+- [Storage](/api/ledger/store) - Storage layer and consensus store
+- [Query Operations](/api/ledger/query) - Query trait and state access

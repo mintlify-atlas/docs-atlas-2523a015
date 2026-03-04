@@ -1,0 +1,130 @@
+---
+title: Hello world example
+description: A minimal example to get started with SnarkVM
+---
+
+This is the simplest possible SnarkVM example. It demonstrates account creation, key derivation, and basic operations with the Aleo blockchain.
+
+## Complete example
+
+```rust
+use snarkvm::prelude::*;
+use rand::thread_rng;
+
+fn main() -> Result<()> {
+    // Generate a new private key
+    let private_key = PrivateKey::<Testnet3>::new(&mut thread_rng())?;
+    
+    // Derive the view key and address
+    let view_key = ViewKey::try_from(&private_key)?;
+    let address = Address::try_from(&private_key)?;
+    
+    // Print the account information
+    println!("Welcome to SnarkVM!");
+    println!("==================");
+    println!("Private Key: {}", private_key);
+    println!("View Key:    {}", view_key);
+    println!("Address:     {}", address);
+    
+    Ok(())
+}
+```
+
+## Step by step
+
+Let's break down what's happening:
+
+<Steps>
+  <Step title="Import the prelude">
+    ```rust
+    use snarkvm::prelude::*;
+    use rand::thread_rng;
+    ```
+    
+    The prelude provides all commonly used types. We also import `thread_rng` for random number generation.
+  </Step>
+  
+  <Step title="Generate a private key">
+    ```rust
+    let private_key = PrivateKey::<Testnet3>::new(&mut thread_rng())?;
+    ```
+    
+    Creates a new cryptographically secure private key for the Testnet3 network. The private key is the root secret that controls the account.
+  </Step>
+  
+  <Step title="Derive the view key">
+    ```rust
+    let view_key = ViewKey::try_from(&private_key)?;
+    ```
+    
+    The view key is derived from the private key and can decrypt records without the ability to spend them.
+  </Step>
+  
+  <Step title="Derive the address">
+    ```rust
+    let address = Address::try_from(&private_key)?;
+    ```
+    
+    The address is the public identifier for the account. It's safe to share and is used to receive transactions.
+  </Step>
+  
+  <Step title="Display the results">
+    ```rust
+    println!("Address: {}", address);
+    ```
+    
+    Print the account information. The address will start with `aleo1` for all networks.
+  </Step>
+</Steps>
+
+## Expected output
+
+When you run this example, you'll see output like:
+
+```
+Welcome to SnarkVM!
+==================
+Private Key: APrivateKey1zkp...
+View Key:    AViewKey1...
+Address:     aleo1...
+```
+
+<Note>
+  The private key is sensitive information. Never share it or commit it to version control.
+</Note>
+
+## Variations
+
+### Using different networks
+
+You can use MainnetV0 or CanaryV0 instead of Testnet3:
+
+```rust
+// For mainnet
+let private_key = PrivateKey::<MainnetV0>::new(&mut thread_rng())?;
+
+// For canary network
+let private_key = PrivateKey::<CanaryV0>::new(&mut thread_rng())?;
+```
+
+### Restoring from an existing private key
+
+If you already have a private key string:
+
+```rust
+let private_key = PrivateKey::<Testnet3>::from_str(
+    "APrivateKey1zkp..."
+)?;
+let address = Address::try_from(&private_key)?;
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Token transfer" icon="exchange" href="/examples/token-transfer">
+    Learn how to transfer credits between accounts
+  </Card>
+  <Card title="Working with accounts" icon="user" href="/guides/working-with-accounts">
+    Deep dive into account management
+  </Card>
+</CardGroup>

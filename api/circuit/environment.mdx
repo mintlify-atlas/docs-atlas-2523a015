@@ -1,0 +1,532 @@
+---
+title: Circuit Environment
+description: Circuit environment trait and witness management
+---
+
+The `snarkvm-circuit-environment` crate provides the `Environment` trait that manages constraint system generation, variable allocation, and witness management for circuit synthesis.
+
+## Environment Trait
+
+### Core Definition
+
+```rust
+pub trait Environment: 'static + Copy + Clone + fmt::Debug + fmt::Display + Eq + PartialEq + hash::Hash {
+    type Network: console::Network<
+        Affine = Self::Affine,
+        Field = Self::BaseField,
+        Scalar = Self::ScalarField
+    >;
+    
+    type Affine: AffineCurve<
+        BaseField = Self::BaseField,
+        ScalarField = Self::ScalarField,
+        Coordinates = (Self::BaseField, Self::BaseField),
+    >;
+    type BaseField: PrimeField + SquareRootField + Copy;
+    type ScalarField: PrimeField<BigInteger = <Self::BaseField as PrimeField>::BigInteger> + Copy;
+    
+    /// The coefficient `A` of the twisted Edwards curve.
+    const EDWARDS_A: Self::BaseField = <Self::Network as console::Environment>::EDWARDS_A;
+    /// The coefficient `D` of the twisted Edwards curve.
+    const EDWARDS_D: Self::BaseField = <Self::Network as console::Environment>::EDWARDS_D;
+    
+    /// The coefficient `A` of the Montgomery curve.
+    const MONTGOMERY_A: Self::BaseField = <Self::Network as console::Environment>::MONTGOMERY_A;
+    /// The coefficient `B` of the Montgomery curve.
+    const MONTGOMERY_B: Self::BaseField = <Self::Network as console::Environment>::MONTGOMERY_B;
+    
+    /// The maximum number of bytes allowed in a string.
+    const MAX_STRING_BYTES: u32 = <Self::Network as console::Environment>::MAX_STRING_BYTES;
+}
+```
+
+Source: `circuit/environment/src/environment.rs:23-46`
+
+<Note>
+The Environment trait is **not** `Send + Sync` because the underlying constraint system is not thread-safe. Each thread must maintain its own circuit environment.
+</Note>
+
+## Variable Allocation
+
+### Creating Variables
+
+```rust
+impl<E: Environment> E {
+    /// Returns the `zero` constant.
+    fn zero() -> LinearCombination<Self::BaseField>;
+    
+    /// Returns the `one` constant.
+    fn one() -> LinearCombination<Self::BaseField>;
+    
+    /// Returns a new variable of the given mode and value.
+    fn new_variable(mode: Mode, value: Self::BaseField) -> Variable<Self::BaseField>;
+    
+    /// Returns a new witness of the given mode and value.
+    fn new_witness<Fn: FnOnce() -> Output::Primitive, Output: Inject>(
+        mode: Mode,
+        value: Fn
+    ) -> Output;
+}
+```
+
+Source: `circuit/environment/src/environment.rs:47-57`
+
+### Variable Types
+
+```rust
+pub enum Variable<F: PrimeField> {
+    /// A constant variable (known at compile time)
+    Constant(Arc<F>),
+    /// A public variable (public input to the proof)
+    Public(Arc<(u64, F)>),  // (index, value)
+    /// A private variable (private witness)
+    Private(Arc<(u64, F)>), // (index, value)
+}
+```
+
+### Linear Combinations
+
+Variables are tracked as linear combinations:
+
+```rust
+pub struct LinearCombination<F: PrimeField> {
+    constant: F,
+    /// The list of terms is kept sorted in order to speed up lookups.
+    terms: SmallVec<[(Variable<F>, F); 1]>,
+    /// The value of this linear combination.
+    value: F,
+}
+
+impl<F: PrimeField> LinearCombination<F> {
+    /// Returns `true` if there are no terms in the linear combination.
+    pub fn is_constant(&self) -> bool {
+        self.terms.is_empty()
+    }
+    
+    /// Returns `true` if there is exactly one term with a coefficient of one,
+    /// and the term contains a public variable.
+    pub fn is_public(&self) -> bool {
+        self.constant.is_zero()
+            && self.terms.len() == 1
+            && match self.terms.first() {
+                Some((Variable::Public(..), coefficient)) => *coefficient == F::one(),
+                _ => false,
+            }
+    }
+    
+    /// Returns `true` if the linear combination is not constant or public.
+    pub fn is_private(&self) -> bool {
+        !self.is_constant() && !self.is_public()
+    }
+    
+    /// Returns the mode of this linear combination.
+    pub fn mode(&self) -> Mode {
+        if self.is_constant() {
+            Mode::Constant
+        } else if self.is_public() {
+            Mode::Public
+        } else {
+            Mode::Private
+        }
+    }
+}
+```
+
+Source: `circuit/environment/src/helpers/linear_combination.rs:36-85`
+
+## Constraint Generation
+
+### Adding Constraints
+
+```rust
+impl<E: Environment> E {
+    /// Adds one constraint enforcing that `(A * B) == C`.
+    fn enforce<Fn, A, B, C>(constraint: Fn) -> Result<(), ConstraintUnsatisfied>
+    where
+        Fn: FnOnce() -> (A, B, C),
+        A: Into<LinearCombination<Self::BaseField>>,
+        B: Into<LinearCombination<Self::BaseField>>,
+        C: Into<LinearCombination<Self::BaseField>>;
+    
+    /// Adds one constraint enforcing that the given boolean is `true`.
+    fn assert<Boolean: Into<LinearCombination<Self::BaseField>>>(
+        boolean: Boolean,
+    ) -> Result<(), ConstraintUnsatisfied> {
+        Self::enforce(|| (boolean, Self::one(), Self::one()))
+    }
+    
+    /// Adds one constraint enforcing that `A == B`.
+    fn assert_eq<A, B>(a: A, b: B) -> Result<(), ConstraintUnsatisfied>
+    where
+        A: Into<LinearCombination<Self::BaseField>>,
+        B: Into<LinearCombination<Self::BaseField>>,
+    {
+        Self::enforce(|| (a, Self::one(), b))
+    }
+    
+    /// Adds one constraint enforcing that `A != B`.
+    fn assert_neq<A, B>(a: A, b: B) -> Result<(), ConstraintUnsatisfied>
+    where
+        A: Into<LinearCombination<Self::BaseField>>,
+        B: Into<LinearCombination<Self::BaseField>>,
+    {
+        let (a, b) = (a.into(), b.into());
+        let mode = witness_mode!(a, b);
+        
+        // Compute `(a - b)`.
+        let a_minus_b = a - b;
+        
+        // Compute `multiplier` as `1 / (a - b)`.
+        let multiplier = match a_minus_b.value().inverse() {
+            Some(inverse) => Self::new_variable(mode, inverse).into(),
+            None => Self::zero(),
+        };
+        
+        // Enforce `(a - b) * multiplier == 1`.
+        Self::enforce(|| (a_minus_b, multiplier, Self::one()))
+    }
+}
+```
+
+Source: `circuit/environment/src/environment.rs:64-108`
+
+### Example: Enforcing Constraints
+
+```rust
+use snarkvm_circuit_environment::prelude::*;
+
+// Assert boolean value
+let is_valid = Boolean::<Circuit>::new(Mode::Private, true);
+Circuit::assert(is_valid)?;
+
+// Assert equality
+let a = Field::<Circuit>::new(Mode::Private, console::Field::from(5u64));
+let b = Field::<Circuit>::new(Mode::Public, console::Field::from(5u64));
+Circuit::assert_eq(&a, &b)?;
+
+// Assert inequality
+let c = Field::<Circuit>::new(Mode::Private, console::Field::from(3u64));
+Circuit::assert_neq(&a, &c)?;
+
+// Custom constraint: (a + b) * c == d
+let d = (&a + &b) * &c;
+Circuit::enforce(|| (&a + &b, c, d))?;
+```
+
+## Constraint Satisfaction
+
+### Checking Satisfaction
+
+```rust
+impl<E: Environment> E {
+    /// Returns `true` if all constraints in the environment are satisfied.
+    fn is_satisfied() -> bool;
+    
+    /// Returns `true` if all constraints in the current scope are satisfied.
+    fn is_satisfied_in_scope() -> bool;
+}
+
+// Example usage
+let a = Field::<Circuit>::new(Mode::Private, console::Field::from(5u64));
+let b = Field::<Circuit>::new(Mode::Private, console::Field::from(5u64));
+
+Circuit::assert_eq(&a, &b).unwrap();
+assert!(Circuit::is_satisfied());
+
+let c = Field::<Circuit>::new(Mode::Private, console::Field::from(3u64));
+Circuit::assert_eq(&a, &c).unwrap();
+assert!(!Circuit::is_satisfied());  // Constraint violated!
+```
+
+Source: `circuit/environment/src/environment.rs:110-114`
+
+## Resource Counting
+
+### Counting Variables and Constraints
+
+```rust
+impl<E: Environment> E {
+    /// Returns the number of constants in the entire environment.
+    fn num_constants() -> u64;
+    
+    /// Returns the number of public variables in the entire environment.
+    fn num_public() -> u64;
+    
+    /// Returns the number of private variables in the entire environment.
+    fn num_private() -> u64;
+    
+    /// Returns the number of constant, public, and private variables.
+    fn num_variables() -> u64;
+    
+    /// Returns the number of constraints in the entire environment.
+    fn num_constraints() -> u64;
+    
+    /// Returns the number of nonzeros in the entire circuit.
+    fn num_nonzeros() -> (u64, u64, u64);  // (A, B, C matrices)
+    
+    /// Returns all counts as a tuple.
+    fn count() -> (u64, u64, u64, u64, (u64, u64, u64)) {
+        (
+            Self::num_constants(),
+            Self::num_public(),
+            Self::num_private(),
+            Self::num_constraints(),
+            Self::num_nonzeros()
+        )
+    }
+}
+```
+
+Source: `circuit/environment/src/environment.rs:116-137`
+
+### Scope-Based Counting
+
+```rust
+impl<E: Environment> E {
+    /// Returns the number of constants for the current scope.
+    fn num_constants_in_scope() -> u64;
+    
+    /// Returns the number of public variables for the current scope.
+    fn num_public_in_scope() -> u64;
+    
+    /// Returns the number of private variables for the current scope.
+    fn num_private_in_scope() -> u64;
+    
+    /// Returns the number of constraints for the current scope.
+    fn num_constraints_in_scope() -> u64;
+    
+    /// Returns the number of nonzeros for the current scope.
+    fn num_nonzeros_in_scope() -> (u64, u64, u64);
+    
+    /// Returns all scope counts as a tuple.
+    fn count_in_scope() -> (u64, u64, u64, u64, (u64, u64, u64)) {
+        (
+            Self::num_constants_in_scope(),
+            Self::num_public_in_scope(),
+            Self::num_private_in_scope(),
+            Self::num_constraints_in_scope(),
+            Self::num_nonzeros_in_scope(),
+        )
+    }
+}
+```
+
+Source: `circuit/environment/src/environment.rs:139-163`
+
+## Scoping
+
+### Creating Scopes
+
+```rust
+impl<E: Environment> E {
+    /// Enters a new scope for the environment.
+    fn scope<S: Into<String>, Fn, Output>(name: S, logic: Fn) -> Output
+    where
+        Fn: FnOnce() -> Output;
+}
+
+// Example usage
+Circuit::scope("hash_computation", || {
+    let input = Field::<Circuit>::new(Mode::Private, console::Field::from(42u64));
+    let hash = Poseidon4::<Circuit>::hash(&[input]);
+    
+    let (_, _, _, constraints, _) = Circuit::count_in_scope();
+    println!("Hash used {constraints} constraints");
+    
+    hash
+});
+```
+
+Source: `circuit/environment/src/environment.rs:60-62`
+
+Scopes allow you to:
+- Track resource usage per component
+- Organize constraint generation hierarchically
+- Debug constraint counts for specific operations
+
+## Witness Management
+
+### Creating Witnesses
+
+Witnesses are circuit values computed from a closure:
+
+```rust
+impl<E: Environment> E {
+    /// Returns a new witness of the given mode and value.
+    fn new_witness<Fn: FnOnce() -> Output::Primitive, Output: Inject>(
+        mode: Mode,
+        value: Fn
+    ) -> Output;
+}
+
+// Example: Compute witness from closure
+let x = Field::<Circuit>::new(Mode::Private, console::Field::from(5u64));
+let y = Field::<Circuit>::new(Mode::Private, console::Field::from(3u64));
+
+let sum = Circuit::new_witness(Mode::Private, || {
+    x.eject_value() + y.eject_value()
+});
+```
+
+Source: `circuit/environment/src/environment.rs:56-57`
+
+### Witness Mode Macro
+
+The `witness_mode!` macro computes the mode of witness values:
+
+```rust
+// Combine modes from multiple values
+let mode = witness_mode!(a, b, c);
+
+// Equivalent to:
+let mode = Mode::combine(
+    a.eject_mode(),
+    [b.eject_mode(), c.eject_mode()]
+);
+```
+
+## R1CS Extraction
+
+### Extracting the Constraint System
+
+```rust
+impl<E: Environment> E {
+    /// Returns the R1CS circuit, resetting the circuit.
+    fn eject_r1cs_and_reset() -> R1CS<Self::BaseField>;
+    
+    /// Returns the R1CS assignment, resetting the circuit.
+    fn eject_assignment_and_reset() -> Assignment<Field>;
+    
+    /// Injects an R1CS circuit.
+    fn inject_r1cs(r1cs: R1CS<Self::BaseField>);
+    
+    /// Clears and initializes an empty environment.
+    fn reset();
+}
+```
+
+Source: `circuit/environment/src/environment.rs:183-192`
+
+### R1CS Structure
+
+```rust
+pub struct R1CS<F: PrimeField> {
+    constants: Vec<Variable<F>>,
+    pub(crate) public: Vec<Variable<F>>,
+    pub(crate) private: Vec<Variable<F>>,
+    pub(crate) constraints: Vec<Arc<Constraint<F>>>,
+    counter: Counter<F>,
+    pub(crate) num_variables: u64,
+    nonzeros: (u64, u64, u64),
+}
+
+impl<F: PrimeField> R1CS<F> {
+    /// Returns the number of constants in the constraint system.
+    pub fn num_constants(&self) -> u64;
+    
+    /// Returns the number of public variables.
+    pub fn num_public(&self) -> u64;
+    
+    /// Returns the number of private variables.
+    pub fn num_private(&self) -> u64;
+    
+    /// Returns the number of constraints.
+    pub fn num_constraints(&self) -> u64;
+    
+    /// Returns the number of nonzeros.
+    pub fn num_nonzeros(&self) -> (u64, u64, u64);
+    
+    /// Returns the public variables.
+    pub fn to_public_variables(&self) -> &Vec<Variable<F>>;
+    
+    /// Returns the private variables.
+    pub fn to_private_variables(&self) -> &Vec<Variable<F>>;
+    
+    /// Returns the constraints.
+    pub fn to_constraints(&self) -> &Vec<Arc<Constraint<F>>>;
+}
+```
+
+Source: `circuit/environment/src/helpers/r1cs.rs:63-247`
+
+## Resource Limits
+
+### Setting Limits
+
+```rust
+impl<E: Environment> E {
+    /// Returns the variable limit for the circuit, if one exists.
+    fn get_variable_limit() -> Option<u64>;
+    
+    /// Sets the variable limit for the circuit.
+    fn set_variable_limit(limit: Option<u64>);
+    
+    /// Returns the constraint limit for the circuit, if one exists.
+    fn get_constraint_limit() -> Option<u64>;
+    
+    /// Sets the constraint limit for the circuit.
+    fn set_constraint_limit(limit: Option<u64>);
+}
+
+// Example: Set limits
+Circuit::set_variable_limit(Some(1_000_000));
+Circuit::set_constraint_limit(Some(500_000));
+
+// Circuit will halt if limits are exceeded
+```
+
+Source: `circuit/environment/src/environment.rs:165-175`
+
+## Testing Utilities
+
+### Assertion Macros
+
+```rust
+// Assert exact constraint counts
+assert_scope!(constants, public, private, constraints);
+
+// Assert output mode
+assert_output_mode!(expected_mode, circuit_value);
+
+// Get current counts
+let (constants, public, private, constraints, _) = count!();
+
+// Get output mode
+let mode = output_mode!(circuit_value);
+```
+
+### Example Test
+
+```rust
+#[test]
+fn test_field_operations() {
+    Circuit::scope("test", || {
+        let a = Field::<Circuit>::new(Mode::Private, console::Field::from(5u64));
+        let b = Field::<Circuit>::new(Mode::Private, console::Field::from(3u64));
+        
+        // Addition is free (no constraints)
+        let c = &a + &b;
+        assert_scope!(0, 0, 3, 0);
+        
+        // Multiplication adds 1 constraint
+        let d = &a * &b;
+        assert_scope!(0, 0, 4, 1);
+        
+        assert!(Circuit::is_satisfied());
+    });
+}
+```
+
+## Best Practices
+
+1. **Use scopes for organization** - Track resource usage per component
+2. **Check satisfaction regularly** - Catch constraint violations early
+3. **Set resource limits** - Prevent unbounded circuit growth
+4. **Test constraint counts** - Verify expected resource usage
+5. **Reset between tests** - Use `Circuit::reset()` to clear state
+
+## See Also
+
+- [Circuit Overview](/api/circuit/overview) - Constraint system architecture
+- [Circuit Types](/api/circuit/types) - Primitive types that use environments
+- [Circuit Program](/api/circuit/program) - Program execution with environments

@@ -1,0 +1,442 @@
+---
+title: Custom Network Configurations
+description: Setting up custom network configurations for development and testing
+---
+
+## Overview
+
+SnarkVM supports multiple network configurations for different deployment scenarios. Understanding network types and how to configure them is essential for development, testing, and production deployments.
+
+## Built-in Networks
+
+SnarkVM includes three pre-configured networks:
+
+### MainnetV0
+
+The production Aleo blockchain network.
+
+```rust
+use snarkvm::prelude::*;
+
+type CurrentNetwork = MainnetV0;
+
+// Network constants
+const NETWORK_ID: u16 = MainnetV0::ID;           // 0
+const NETWORK_NAME: &str = MainnetV0::NAME;       // "Aleo Mainnet"
+const SHORT_NAME: &str = MainnetV0::SHORT_NAME;   // "mainnet"
+```
+
+**Network Parameters:**
+- Network ID: `0`
+- Genesis timestamp: `1731484800` (2024-11-13 08:00:00 UTC)
+- Genesis coinbase target: `4611686018427387903`
+- Genesis proof target: `281474976710655`
+- Starting supply: 1.5B credits
+- Maximum supply: 5B credits
+
+### TestnetV0
+
+Public test network for development and testing.
+
+```rust
+type CurrentNetwork = TestnetV0;
+
+// Network constants
+const NETWORK_ID: u16 = TestnetV0::ID;           // 1
+const NETWORK_NAME: &str = TestnetV0::NAME;       // "Aleo Testnet"
+const SHORT_NAME: &str = TestnetV0::SHORT_NAME;   // "testnet"
+```
+
+**Network Parameters:**
+- Network ID: `1`
+- Genesis timestamp: `1715778000` (2024-05-15 13:00:00 UTC)
+- Genesis coinbase target: `4611686018427387903`
+- Genesis proof target: `281474976710655`
+- Same supply parameters as mainnet
+
+### CanaryV0
+
+Pre-production testing network for new features.
+
+```rust
+type CurrentNetwork = CanaryV0;
+
+// Network constants
+const NETWORK_ID: u16 = CanaryV0::ID;            // 2
+const NETWORK_NAME: &str = CanaryV0::NAME;        // "Aleo Canary"
+const SHORT_NAME: &str = CanaryV0::SHORT_NAME;    // "canary"
+```
+
+**Network Parameters:**
+- Network ID: `2`
+- Genesis timestamp: `1717329600` (2024-06-02 12:00:00 UTC)
+- Genesis coinbase target: `4611686018427387903`
+- Genesis proof target: `281474976710655`
+
+## Network Trait
+
+All networks implement the `Network` trait:
+
+```rust
+pub trait Network: Environment + Copy + Clone + Debug + Serialize + DeserializeOwned {
+    /// The network ID.
+    const ID: u16;
+    /// The (long) network name.
+    const NAME: &'static str;
+    /// The short network name.
+    const SHORT_NAME: &'static str;
+
+    /// The fixed timestamp of the genesis block.
+    const GENESIS_TIMESTAMP: i64;
+    /// The genesis block coinbase target.
+    const GENESIS_COINBASE_TARGET: u64;
+    /// The genesis block proof target.
+    const GENESIS_PROOF_TARGET: u64;
+
+    /// The starting supply of Aleo credits.
+    const STARTING_SUPPLY: u64 = 1_500_000_000_000_000;
+    /// The maximum supply of Aleo credits.
+    const MAX_SUPPLY: u64 = 5_000_000_000_000_000;
+
+    // ... cryptographic parameters and more
+}
+```
+
+## Creating a Custom Network
+
+<Warning>
+  Custom networks are primarily for development and testing. Production deployments should use the official networks. Custom networks are not compatible with the official Aleo blockchain.
+</Warning>
+
+### Define Your Network
+
+Create a new network type implementing the `Network` trait:
+
+```rust
+use snarkvm::prelude::*;
+use snarkvm_algorithms::*;
+use snarkvm_console_network::*;
+
+pub struct CustomNetwork;
+
+impl Network for CustomNetwork {
+    const ID: u16 = 999;
+    const NAME: &'static str = "Custom Test Network";
+    const SHORT_NAME: &'static str = "custom";
+
+    const GENESIS_TIMESTAMP: i64 = 1704067200; // 2024-01-01
+    const GENESIS_COINBASE_TARGET: u64 = 4611686018427387903;
+    const GENESIS_PROOF_TARGET: u64 = 281474976710655;
+
+    // Use default supply parameters or customize
+    const STARTING_SUPPLY: u64 = 1_000_000_000_000;
+    const MAX_SUPPLY: u64 = 10_000_000_000_000;
+
+    // Additional network-specific configuration
+    const DEPLOYMENT_FEE_MULTIPLIER: u64 = 100;
+    const EXECUTION_STORAGE_FEE_SCALING_FACTOR: u64 = 5000;
+}
+```
+
+### Initialize Cryptographic Parameters
+
+Set up hash functions and cryptographic primitives:
+
+```rust
+use lazy_static::lazy_static;
+
+lazy_static! {
+    // Initialize BHP hash functions
+    pub static ref CUSTOM_BHP_256: BHP256<CustomNetwork> =
+        BHP256::<CustomNetwork>::setup("CustomBHP256")
+            .expect("Failed to setup BHP256");
+
+    pub static ref CUSTOM_BHP_512: BHP512<CustomNetwork> =
+        BHP512::<CustomNetwork>::setup("CustomBHP512")
+            .expect("Failed to setup BHP512");
+
+    // Initialize Poseidon hash functions
+    pub static ref CUSTOM_POSEIDON_2: Poseidon2<CustomNetwork> =
+        Poseidon2::<CustomNetwork>::setup("CustomPoseidon2")
+            .expect("Failed to setup Poseidon2");
+
+    pub static ref CUSTOM_POSEIDON_4: Poseidon4<CustomNetwork> =
+        Poseidon4::<CustomNetwork>::setup("CustomPoseidon4")
+            .expect("Failed to setup Poseidon4");
+
+    // Generator points for signatures
+    pub static ref GENERATOR_G: Vec<Group<CustomNetwork>> =
+        CustomNetwork::new_bases("CustomSignatureScheme");
+}
+```
+
+### Configure Environment
+
+Implement the `Environment` trait for curve and field configuration:
+
+```rust
+impl Environment for CustomNetwork {
+    type Affine = <Self::PairingCurve as PairingEngine>::G1Affine;
+    type BigInteger = <Self::BaseField as PrimeField>::BigInteger;
+    type Field = <Self::PairingCurve as PairingEngine>::Fr;
+    type PairingCurve = snarkvm_curves::bls12_377::Bls12_377;
+    type Projective = <Self::PairingCurve as PairingEngine>::G1Projective;
+    type Scalar = <Self::Projective as ProjectiveCurve>::ScalarField;
+
+    const COFACTOR: &'static [u64] = &[/* your cofactor */];
+    const EDWARDS_A: Self::Field = /* your parameter */;
+    const MONTGOMERY_A: Self::Field = /* your parameter */;
+    const MONTGOMERY_B: Self::Field = /* your parameter */;
+}
+```
+
+## Network Selection
+
+### At Compile Time
+
+Use type parameters for compile-time network selection:
+
+```rust
+use snarkvm::prelude::*;
+
+fn create_account<N: Network>() -> Account<N> {
+    Account::new(&mut rand::thread_rng())
+}
+
+// Use with specific network
+let mainnet_account = create_account::<MainnetV0>();
+let testnet_account = create_account::<TestnetV0>();
+```
+
+### At Runtime
+
+Use enums or trait objects for runtime selection:
+
+```rust
+enum NetworkType {
+    Mainnet,
+    Testnet,
+    Canary,
+}
+
+impl NetworkType {
+    fn network_id(&self) -> u16 {
+        match self {
+            NetworkType::Mainnet => MainnetV0::ID,
+            NetworkType::Testnet => TestnetV0::ID,
+            NetworkType::Canary => CanaryV0::ID,
+        }
+    }
+
+    fn from_id(id: u16) -> Option<Self> {
+        match id {
+            0 => Some(NetworkType::Mainnet),
+            1 => Some(NetworkType::Testnet),
+            2 => Some(NetworkType::Canary),
+            _ => None,
+        }
+    }
+}
+```
+
+## Consensus Configuration
+
+SnarkVM uses version-based consensus configuration:
+
+```rust
+use snarkvm::prelude::*;
+
+// Get consensus configuration at a specific height
+let config = consensus_config_value::<MainnetV0>(height, |config| {
+    config.max_certificates
+});
+
+// Get configuration by version
+let version_config = consensus_config_value_by_version::<MainnetV0>(
+    ConsensusVersion::V1,
+    |config| config.anchor_time,
+);
+```
+
+### Consensus Parameters
+
+Key consensus parameters include:
+
+- `max_certificates`: Maximum batch certificates per subdag
+- `anchor_time`: Target time between anchor blocks (seconds)
+- `max_gc_rounds`: Maximum garbage collection rounds
+- `max_array_elements`: Maximum elements in arrays
+- `max_instructions`: Maximum instructions per finalize
+
+## Storage Configuration
+
+Configure storage for your custom network:
+
+```rust
+use aleo_std::StorageMode;
+
+// Development mode (in-memory)
+let dev_storage = StorageMode::Development(0);
+
+// Production mode (persistent RocksDB)
+let prod_storage = StorageMode::Production;
+
+// Custom path
+let custom_storage = StorageMode::Custom("/path/to/ledger".into());
+
+// Initialize ledger with storage mode
+let ledger = Ledger::<CustomNetwork, ConsensusStore<_, _>>::load(
+    genesis_block,
+    custom_storage,
+)?;
+```
+
+See [Storage Modes](/advanced/storage-modes) for detailed storage configuration.
+
+## Testing Your Network
+
+### Unit Tests
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_custom_network() {
+        // Verify network parameters
+        assert_eq!(CustomNetwork::ID, 999);
+        assert_eq!(CustomNetwork::NAME, "Custom Test Network");
+
+        // Test account creation
+        let account = Account::<CustomNetwork>::new(&mut rand::thread_rng());
+        assert!(account.address().is_some());
+    }
+
+    #[test]
+    fn test_cryptographic_parameters() {
+        // Verify hash function initialization
+        let input = vec![0u8; 32];
+        let hash = CUSTOM_BHP_256.hash(&input).unwrap();
+        assert!(hash != Field::<CustomNetwork>::zero());
+    }
+}
+```
+
+### Integration Tests
+
+```rust
+use snarkvm::prelude::*;
+use aleo_std::StorageMode;
+
+#[test]
+fn test_custom_network_ledger() {
+    // Create genesis block
+    let genesis = Block::<CustomNetwork>::genesis();
+
+    // Initialize ledger
+    let ledger = Ledger::<CustomNetwork, ConsensusStore<_, _>>::load(
+        genesis,
+        StorageMode::Development(0),
+    ).unwrap();
+
+    // Verify genesis
+    assert_eq!(ledger.latest_height(), 0);
+    assert_eq!(ledger.latest_hash(), genesis.hash());
+}
+```
+
+## Best Practices
+
+### Network ID Selection
+
+- Use IDs >= 1000 for custom networks
+- Document your network ID to avoid conflicts
+- Never reuse official network IDs (0, 1, 2)
+
+### Parameter Configuration
+
+- Start with parameters from an official network
+- Adjust only necessary parameters for your use case
+- Document all parameter changes
+- Test thoroughly before deployment
+
+### Security Considerations
+
+<Warning>
+  - Custom networks do not inherit security properties of official networks
+  - Cryptographic parameters must be generated securely
+  - Genesis block must be carefully constructed
+  - Never use custom networks with real value
+</Warning>
+
+### Performance Tuning
+
+- Adjust block time targets for your use case
+- Configure transaction limits based on expected load
+- Set appropriate storage parameters
+- Monitor consensus behavior under load
+
+## Common Use Cases
+
+### Local Development
+
+```rust
+// Fast block times, low difficulty for rapid iteration
+const GENESIS_COINBASE_TARGET: u64 = u64::MAX >> 8;
+const GENESIS_PROOF_TARGET: u64 = u64::MAX >> 8;
+```
+
+### Integration Testing
+
+```rust
+// Isolated network per test with in-memory storage
+let storage = StorageMode::Development(test_id);
+```
+
+### Private Networks
+
+```rust
+// Custom genesis, specific network ID range
+const ID: u16 = 5000 + private_network_id;
+```
+
+## Troubleshooting
+
+### Network ID Conflicts
+
+If you see network ID errors:
+
+```rust
+// Ensure unique network IDs
+assert_ne!(CustomNetwork::ID, MainnetV0::ID);
+assert_ne!(CustomNetwork::ID, TestnetV0::ID);
+```
+
+### Genesis Block Issues
+
+Verify genesis block validity:
+
+```rust
+let genesis = Block::<CustomNetwork>::genesis();
+assert!(genesis.verify());
+```
+
+### Parameter Mismatches
+
+Ensure all cryptographic parameters are properly initialized:
+
+```rust
+// Test parameter initialization
+#[test]
+fn verify_parameters() {
+    let _ = &*CUSTOM_BHP_256;
+    let _ = &*CUSTOM_POSEIDON_2;
+    let _ = &*GENERATOR_G;
+}
+```
+
+## Related Topics
+
+- [Storage Modes](/advanced/storage-modes) - Configure storage for your network
+- [CUDA Acceleration](/advanced/cuda-acceleration) - Optimize network performance with GPU acceleration

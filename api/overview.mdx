@@ -1,0 +1,197 @@
+---
+title: 'API Overview'
+description: 'Overview of the SnarkVM Algorithms API structure and module organization'
+---
+
+## Overview
+
+The `snarkvm-algorithms` crate provides the core cryptographic primitives and algorithms for zero-knowledge proof construction in SnarkVM. This crate implements the foundational mathematical operations required for the Aleo blockchain's proof system.
+
+## Module Structure
+
+The algorithms crate is organized into the following key modules:
+
+### Cryptographic Hash Functions
+
+The `crypto_hash` module provides cryptographic hash functions optimized for zero-knowledge proofs.
+
+- **Poseidon** - Algebraic hash function designed for efficient ZK circuits
+- **SHA-256** - Standard cryptographic hash with circuit implementations
+
+See [Cryptographic Hash Functions](/api/algorithms/crypto-hash) for details.
+
+### Polynomial Operations
+
+The `fft` module implements Fast Fourier Transform operations for efficient polynomial arithmetic.
+
+- **EvaluationDomain** - FFT domains for polynomial evaluation
+- **DensePolynomial** - Dense polynomial representation
+- **SparsePolynomial** - Sparse polynomial representation
+- **Evaluations** - Polynomial evaluations in Lagrange basis
+
+See [FFT Implementations](/api/algorithms/fft) for details.
+
+### Polynomial Commitments
+
+The `polycommit` module implements polynomial commitment schemes.
+
+- **KZG10** - Kate-Zaverucha-Goldberg polynomial commitments
+- **SonicKZG10** - Batched KZG with degree bounds from Sonic/AuroraLight
+
+See [Polynomial Commitment Schemes](/api/algorithms/polycommit) for details.
+
+### SNARK Implementations
+
+The `snark` module contains zero-knowledge proof system implementations.
+
+- **Varuna** - The primary zkSNARK used in Aleo
+- **AHP** - Algebraic Holographic Proof for R1CS
+
+See [SNARK Implementations](/api/algorithms/snark) for details.
+
+### Multi-Scalar Multiplication
+
+The `msm` module provides optimized multi-scalar multiplication for elliptic curves.
+
+- **VariableBase** - Variable-base MSM using Pippenger's algorithm
+- **FixedBase** - Fixed-base MSM with precomputation
+
+### R1CS Constraint Systems
+
+The `r1cs` module defines the Rank-1 Constraint System abstraction.
+
+- **ConstraintSynthesizer** - Trait for circuit synthesis
+- **ConstraintSystem** - R1CS constraint collection
+
+### Structured Reference Strings
+
+The `srs` module manages the universal structured reference string.
+
+- **UniversalSRS** - Universal parameters for polynomial commitments
+- **UniversalProver** - Prover-side SRS
+- **UniversalVerifier** - Verifier-side SRS
+
+## Core Traits
+
+### SNARK Trait
+
+The `SNARK` trait defines the interface for zero-knowledge proof systems:
+
+```rust
+pub trait SNARK {
+    type ScalarField: PrimeField;
+    type BaseField: PrimeField;
+    type Certificate;
+    type Proof;
+    type ProvingKey;
+    type VerifyingKey;
+    type UniversalSRS;
+    
+    fn universal_setup(config: usize) -> Result<Self::UniversalSRS>;
+    fn circuit_setup<C>(
+        srs: &Self::UniversalSRS,
+        circuit: &C,
+    ) -> Result<(Self::ProvingKey, Self::VerifyingKey)>;
+    fn prove<C, R>(
+        universal_prover: &Self::UniversalProver,
+        proving_key: &Self::ProvingKey,
+        constraints: &C,
+        rng: &mut R,
+    ) -> Result<Self::Proof>;
+    fn verify(
+        universal_verifier: &Self::UniversalVerifier,
+        verifying_key: &Self::VerifyingKey,
+        input: &Self::VerifierInput,
+        proof: &Self::Proof,
+    ) -> Result<bool>;
+}
+```
+
+### AlgebraicSponge Trait
+
+The `AlgebraicSponge` trait provides cryptographic sponge functions for Fiat-Shamir transformations:
+
+```rust
+pub trait AlgebraicSponge<F: PrimeField, const RATE: usize> {
+    fn absorb_native_field_elements<T>(&mut self, elements: &[T]);
+    fn squeeze_native_field_elements(&mut self, num: usize) -> SmallVec<[F; 10]>;
+    fn absorb_nonnative_field_elements<T>(&mut self, elements: impl IntoIterator<Item = T>);
+    fn squeeze_nonnative_field_elements<T>(&mut self, num: usize) -> SmallVec<[T; 10]>;
+}
+```
+
+## Dependencies
+
+The algorithms crate depends on:
+
+- `snarkvm-fields` - Finite field arithmetic
+- `snarkvm-curves` - Elliptic curve implementations
+- `snarkvm-utilities` - Common utilities and macros
+- `snarkvm-parameters` - Parameter loading and management
+
+## Feature Flags
+
+- `cuda` - Enable CUDA acceleration for MSM operations
+- `serial` - Disable parallel computation (for deterministic testing)
+- `test` - Enable test utilities
+- `profiler` - Enable performance profiling
+
+## Architecture Notes
+
+### Crate Organization
+
+Following the snarkVM architecture:
+
+1. **No circular dependencies** - algorithms depends only on fields, curves, and utilities
+2. **Parallel by default** - Uses Rayon for parallel computation unless `serial` feature is enabled
+3. **Generic over curves** - Algorithms are generic over `PairingEngine` for flexibility
+
+### Performance Considerations
+
+- FFT operations are parallelized across available cores
+- MSM uses Pippenger's algorithm with optimal window sizing
+- Polynomial commitments support batching for improved performance
+- Optional CUDA acceleration for compute-intensive operations
+
+## Common Patterns
+
+### Working with Polynomials
+
+```rust
+use snarkvm_algorithms::fft::{DensePolynomial, EvaluationDomain};
+
+// Create a polynomial from coefficients
+let poly = DensePolynomial::from_coefficients_vec(vec![1, 2, 3]);
+
+// Evaluate at a point
+let value = poly.evaluate(point);
+
+// Perform FFT
+let domain = EvaluationDomain::new(8)?;
+let evaluations = domain.fft(&poly);
+```
+
+### Using Polynomial Commitments
+
+```rust
+use snarkvm_algorithms::polycommit::kzg10::KZG10;
+
+// Load universal parameters
+let srs = KZG10::load_srs(max_degree)?;
+
+// Commit to a polynomial
+let (commitment, randomness) = KZG10::commit(&powers, &polynomial, hiding_bound, rng)?;
+
+// Open at a point
+let proof = KZG10::open(&powers, &polynomial, point, &randomness)?;
+
+// Verify the opening
+let valid = KZG10::check(&vk, &commitment, point, value, &proof)?;
+```
+
+## Next Steps
+
+- [Cryptographic Hash Functions](/api/algorithms/crypto-hash)
+- [SNARK Implementations](/api/algorithms/snark)
+- [Polynomial Commitments](/api/algorithms/polycommit)
+- [FFT Operations](/api/algorithms/fft)

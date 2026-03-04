@@ -1,0 +1,482 @@
+---
+title: Circuit Program
+description: Circuit program types and execution
+---
+
+The `snarkvm-circuit-program` crate provides circuit equivalents of program execution types, including requests, responses, and program data structures used during zero-knowledge proof generation.
+
+## Overview
+
+Circuit program types enable verification of program execution within a constraint system. They mirror the structure of console program types while generating the necessary constraints for zero-knowledge proofs.
+
+```rust
+use snarkvm_circuit_program::prelude::*;
+
+// Core program types
+use snarkvm_circuit_program::{
+    Request,      // Function call request
+    Response,     // Function execution response
+    InputID,      // Input identification
+    Value,        // Program values (Plaintext, Record, Future)
+    Plaintext,    // Plaintext data
+    Record,       // Record data
+    Literal,      // Literal values
+};
+```
+
+Source: `circuit/program/src/lib.rs:28-44`
+
+## Request
+
+### Structure
+
+A `Request` represents a function call with inputs:
+
+```rust
+pub struct Request<A: Aleo> {
+    /// The request signer.
+    signer: Address<A>,
+    /// The network ID.
+    network_id: U16<A>,
+    /// The program ID.
+    program_id: ProgramID<A>,
+    /// The function name.
+    function_name: Identifier<A>,
+    /// The function input IDs.
+    input_ids: Vec<InputID<A>>,
+    /// The function inputs.
+    inputs: Vec<Value<A>>,
+    /// The signature for the transition.
+    signature: Signature<A>,
+    /// The tag secret key.
+    sk_tag: Field<A>,
+    /// The transition view key.
+    tvk: Field<A>,
+    /// The transition commitment.
+    tcm: Field<A>,
+    /// The signer commitment.
+    scm: Field<A>,
+}
+```
+
+Source: `circuit/program/src/request/mod.rs:128-151`
+
+### Injection
+
+Requests are injected into circuits with specific mode assignments:
+
+```rust
+impl<A: Aleo> Inject for Request<A> {
+    type Primitive = console::Request<A::Network>;
+    
+    fn new(mode: Mode, request: Self::Primitive) -> Self {
+        // Inject the transition commitment `tcm` as `Mode::Public`.
+        let tcm = Field::new(Mode::Public, *request.tcm());
+        
+        // Inject the signer commitment `scm` as `Mode::Public`.
+        let scm = Field::new(Mode::Public, *request.scm());
+        
+        // Inject inputs based on their type:
+        let inputs = request.input_ids().iter().zip_eq(request.inputs())
+            .map(|(input_id, input)| {
+                match input_id {
+                    // Constant inputs are Mode::Constant
+                    console::InputID::Constant(..) => 
+                        Value::new(Mode::Constant, input.clone()),
+                    // Public, Private, and Record inputs are Mode::Private
+                    console::InputID::Public(..) |
+                    console::InputID::Private(..) |
+                    console::InputID::Record(..) |
+                    console::InputID::ExternalRecord(..) => 
+                        Value::new(Mode::Private, input.clone()),
+                }
+            })
+            .collect();
+        
+        Self {
+            signer: Address::new(mode, *request.signer()),
+            network_id: U16::new(Mode::Constant, *request.network_id()),
+            program_id: ProgramID::new(Mode::Constant, *request.program_id()),
+            function_name: Identifier::new(Mode::Constant, *request.function_name()),
+            input_ids: request.input_ids().iter()
+                .map(|id| InputID::new(Mode::Public, *id))
+                .collect(),
+            inputs,
+            signature: Signature::new(mode, *request.signature()),
+            sk_tag: Field::new(mode, *request.sk_tag()),
+            tvk: Field::new(mode, *request.tvk()),
+            tcm,
+            scm,
+        }
+    }
+}
+```
+
+Source: `circuit/program/src/request/mod.rs:153-238`
+
+<Note>
+**Mode Assignment Strategy:**
+- `tcm` (transition commitment) is **Public** - verified on-chain
+- `scm` (signer commitment) is **Public** - verified on-chain
+- Input values are **Private** - hidden from verifier
+- Metadata (program ID, function name) is **Constant** - known at compile time
+
+This ensures privacy while allowing on-chain verification.
+</Note>
+
+### Accessors
+
+```rust
+impl<A: Aleo> Request<A> {
+    /// Returns the request signer.
+    pub const fn signer(&self) -> &Address<A>;
+    
+    /// Returns the network ID.
+    pub const fn network_id(&self) -> &U16<A>;
+    
+    /// Returns the program ID.
+    pub const fn program_id(&self) -> &ProgramID<A>;
+    
+    /// Returns the function name.
+    pub const fn function_name(&self) -> &Identifier<A>;
+    
+    /// Returns the input IDs for the transition.
+    pub fn input_ids(&self) -> &[InputID<A>];
+    
+    /// Returns the function inputs.
+    pub fn inputs(&self) -> &[Value<A>];
+    
+    /// Returns the signature for the transition.
+    pub const fn signature(&self) -> &Signature<A>;
+    
+    /// Returns the tag secret key.
+    pub const fn sk_tag(&self) -> &Field<A>;
+    
+    /// Returns the transition view key.
+    pub const fn tvk(&self) -> &Field<A>;
+    
+    /// Returns the transition commitment.
+    pub const fn tcm(&self) -> &Field<A>;
+    
+    /// Returns the signer commitment.
+    pub const fn scm(&self) -> &Field<A>;
+}
+```
+
+Source: `circuit/program/src/request/mod.rs:240-294`
+
+## InputID
+
+### Structure
+
+Input IDs identify and authenticate function inputs:
+
+```rust
+pub enum InputID<A: Aleo> {
+    /// The hash of the constant input.
+    Constant(Field<A>),
+    /// The hash of the public input.
+    Public(Field<A>),
+    /// The ciphertext hash of the private input.
+    Private(Field<A>),
+    /// The `(commitment, gamma, record_view_key, serial_number, tag)` tuple.
+    Record(Field<A>, Box<Group<A>>, Field<A>, Field<A>, Field<A>),
+    /// The hash of the external record.
+    ExternalRecord(Field<A>),
+}
+```
+
+Source: `circuit/program/src/request/mod.rs:27-38`
+
+### Injection Mode Strategy
+
+```rust
+impl<A: Aleo> Inject for InputID<A> {
+    type Primitive = console::InputID<A::Network>;
+    
+    fn new(_: Mode, input: Self::Primitive) -> Self {
+        match input {
+            // Inject hashes as Mode::Public (verifiable on-chain)
+            console::InputID::Constant(field) => 
+                Self::Constant(Field::new(Mode::Public, field)),
+            console::InputID::Public(field) => 
+                Self::Public(Field::new(Mode::Public, field)),
+            console::InputID::Private(field) => 
+                Self::Private(Field::new(Mode::Public, field)),
+            
+            // Inject record components with mixed modes
+            console::InputID::Record(commitment, gamma, rvk, sn, tag) => 
+                Self::Record(
+                    Field::new(Mode::Private, commitment),  // Private
+                    Box::new(Group::new(Mode::Private, gamma)),  // Private
+                    Field::new(Mode::Private, rvk),  // Private
+                    Field::new(Mode::Public, sn),    // Public (serial number)
+                    Field::new(Mode::Public, tag),   // Public (tag)
+                ),
+            
+            console::InputID::ExternalRecord(field) => 
+                Self::ExternalRecord(Field::new(Mode::Public, field)),
+        }
+    }
+}
+```
+
+Source: `circuit/program/src/request/mod.rs:40-64`
+
+## Value
+
+### Structure
+
+Values represent data in program execution:
+
+```rust
+pub enum Value<A: Aleo> {
+    /// A plaintext value.
+    Plaintext(Plaintext<A>),
+    /// A record value.
+    Record(Record<A, Plaintext<A>>),
+    /// A future value.
+    Future(Future<A>),
+}
+```
+
+Source: `circuit/program/src/data/value.rs`
+
+### Plaintext
+
+Plaintext represents structured data:
+
+```rust
+pub enum Plaintext<A: Aleo> {
+    /// A literal value.
+    Literal(Literal<A>, OnceCell<Vec<Boolean<A>>>),
+    /// A struct value.
+    Struct(IndexMap<Identifier<A>, Plaintext<A>>, OnceCell<Vec<Boolean<A>>>),
+    /// An array value.
+    Array(Vec<Plaintext<A>>, OnceCell<Vec<Boolean<A>>>),
+}
+```
+
+Source: `circuit/program/src/data/plaintext.rs`
+
+### Record
+
+Records are owned, private data structures:
+
+```rust
+pub struct Record<A: Aleo, Private: Visibility<A>> {
+    /// The owner of the record.
+    owner: Owner<A, Private>,
+    /// The data of the record.
+    data: IndexMap<Identifier<A>, Entry<A, Private>>,
+    /// The nonce of the record.
+    nonce: Group<A>,
+}
+
+pub enum Entry<A: Aleo, Private: Visibility<A>> {
+    /// A constant entry (always visible).
+    Constant(Plaintext<A>),
+    /// A public entry (visible to verifier).
+    Public(Plaintext<A>),
+    /// A private entry (hidden from verifier).
+    Private(Private),
+}
+```
+
+Source: `circuit/program/src/data/record.rs`
+
+## Response
+
+Responses represent function execution outputs:
+
+```rust
+pub struct Response<A: Aleo> {
+    /// The output ID.
+    output_ids: Vec<OutputID<A>>,
+    /// The outputs.
+    outputs: Vec<Value<A>>,
+}
+```
+
+Source: `circuit/program/src/response/mod.rs`
+
+## Literal
+
+### Structure
+
+Literals are primitive values with casting support:
+
+```rust
+pub enum Literal<A: Aleo> {
+    Address(Address<A>),
+    Boolean(Boolean<A>),
+    Field(Field<A>),
+    Group(Group<A>),
+    I8(I8<A>),
+    I16(I16<A>),
+    I32(I32<A>),
+    I64(I64<A>),
+    I128(I128<A>),
+    U8(U8<A>),
+    U16(U16<A>),
+    U32(U32<A>),
+    U64(U64<A>),
+    U128(U128<A>),
+    Scalar(Scalar<A>),
+    Signature(Box<Signature<A>>),
+    String(StringType<A>),
+}
+```
+
+Source: `circuit/program/src/data/literal/mod.rs`
+
+### Casting
+
+Literals support type casting:
+
+```rust
+pub trait Cast<A: Aleo> {
+    /// Casts the literal to the given type.
+    fn cast(&self, to_type: LiteralType) -> Result<Literal<A>>;
+}
+
+pub trait CastLossy<A: Aleo> {
+    /// Casts the literal to the given type with potential precision loss.
+    fn cast_lossy(&self, to_type: LiteralType) -> Result<Literal<A>>;
+}
+
+// Example usage
+let value = Literal::U32(U32::<A>::new(Mode::Private, console::U32::new(42)));
+let as_u64 = value.cast(LiteralType::U64)?;  // Lossless
+let as_u8 = value.cast_lossy(LiteralType::U8)?;  // May truncate
+```
+
+Source: `circuit/program/src/data/literal/cast.rs`
+
+## Identifier
+
+Identifiers name program elements:
+
+```rust
+pub struct Identifier<A: Aleo>(U8<A>, Vec<U8<A>>);
+
+impl<A: Aleo> Inject for Identifier<A> {
+    type Primitive = console::Identifier<A::Network>;
+    
+    fn new(mode: Mode, identifier: Self::Primitive) -> Self {
+        let bytes = identifier.to_bytes_le().unwrap();
+        let size = U8::new(mode, console::U8::new(bytes.len() as u8));
+        let data = bytes.iter()
+            .map(|byte| U8::new(mode, console::U8::new(*byte)))
+            .collect();
+        Self(size, data)
+    }
+}
+```
+
+Source: `circuit/program/src/data/identifier/mod.rs`
+
+## Visibility Trait
+
+The `Visibility` trait enables type-level privacy:
+
+```rust
+pub trait Visibility<A: Aleo>:
+    Equal<Self, Output = <Self as ToBits>::Boolean>
+    + ToBits<Boolean = Boolean<A>>
+    + FromBits
+    + ToFields
+    + FromFields
+{
+    /// Returns the number of field elements to encode `self`.
+    fn size_in_fields(&self) -> u16;
+}
+
+impl<A: Aleo> Visibility<A> for Plaintext<A> { ... }
+impl<A: Aleo> Visibility<A> for Ciphertext<A> { ... }
+```
+
+Source: `circuit/program/src/lib.rs:49-54`
+
+This allows generic programming over public and private data.
+
+## Example: Request Verification
+
+```rust
+use snarkvm_circuit::prelude::*;
+
+// Verify a function call request in a circuit
+fn verify_request<A: Aleo>(request: Request<A>) -> Boolean<A> {
+    Circuit::scope("verify_request", || {
+        // Verify signature
+        let is_valid = request.signature().verify(
+            request.signer(),
+            &request.to_fields()
+        );
+        
+        // Verify input commitments match input IDs
+        for (input_id, input) in request.input_ids().iter().zip(request.inputs()) {
+            let computed_id = input.to_id();
+            A::assert_eq(computed_id, input_id);
+        }
+        
+        // Verify transition commitment
+        let computed_tcm = compute_tcm(
+            request.program_id(),
+            request.function_name(),
+            request.input_ids(),
+            request.tvk(),
+        );
+        A::assert_eq(computed_tcm, request.tcm());
+        
+        is_valid
+    })
+}
+
+// Example usage
+let console_request = console::Request::new(/* ... */);
+let circuit_request = Request::<Circuit>::new(Mode::Private, console_request);
+let is_valid = verify_request(circuit_request);
+
+assert!(Circuit::is_satisfied());
+assert!(is_valid.eject_value());
+```
+
+## Constraint Considerations
+
+### Request Injection Costs
+
+| Component | Variables | Constraints | Notes |
+|-----------|-----------|-------------|-------|
+| Signer | ~2500 | ~13 | Address (group point) |
+| Signature | ~10000 | ~25000 | Schnorr verification |
+| Input (Plaintext) | Variable | Variable | Depends on type |
+| Input (Record) | ~5000 | ~20 | Record structure |
+| TCM verification | ~1 | ~1000 | Hash computation |
+
+### Optimization Strategies
+
+1. **Use constants when possible** - Program ID and function names are Mode::Constant
+2. **Batch input verification** - Verify multiple inputs together
+3. **Optimize record access** - Cache frequently accessed fields
+4. **Minimize signature verifications** - Expensive operation (~25k constraints)
+
+<Note>
+**Console/Circuit Synchronization:**
+Circuit program types must remain synchronized with console program types. Any changes to console types require corresponding updates to circuit types to maintain the same API and behavior.
+</Note>
+
+## Best Practices
+
+1. **Verify mode assignments** - Ensure sensitive data uses Mode::Private
+2. **Test constraint counts** - Verify expected resource usage per component
+3. **Use scopes for profiling** - Track resource usage per verification step
+4. **Check satisfaction** - Always verify constraints are satisfied
+5. **Minimize public data** - Only expose what's necessary for verification
+
+## See Also
+
+- [Circuit Overview](/api/circuit/overview) - Constraint system architecture
+- [Circuit Types](/api/circuit/types) - Primitive types used in programs
+- [Circuit Environment](/api/circuit/environment) - Environment and constraints
+- [Console Program](/api/console/program) - Console program types

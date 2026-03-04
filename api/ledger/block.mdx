@@ -1,0 +1,528 @@
+---
+title: Block Types
+description: Block, Header, Transaction, and Transition types in the ledger
+---
+
+The ledger block module defines the core data structures for blocks in the Aleo blockchain.
+
+## Block
+
+A block represents a collection of transactions and solutions added to the blockchain.
+
+```rust
+pub struct Block<N: Network> {
+    block_hash: N::BlockHash,
+    previous_hash: N::BlockHash,
+    header: Header<N>,
+    authority: Authority<N>,
+    ratifications: Ratifications<N>,
+    solutions: Solutions<N>,
+    aborted_solution_ids: Vec<SolutionID<N>>,
+    transactions: Transactions<N>,
+    aborted_transaction_ids: Vec<N::TransactionID>,
+}
+```
+
+### Creating Blocks
+
+#### Beacon Block (Testing)
+
+```rust
+pub fn new_beacon<R: Rng + CryptoRng>(
+    private_key: &PrivateKey<N>,
+    previous_hash: N::BlockHash,
+    header: Header<N>,
+    ratifications: Ratifications<N>,
+    solutions: Solutions<N>,
+    aborted_solution_ids: Vec<SolutionID<N>>,
+    transactions: Transactions<N>,
+    aborted_transaction_ids: Vec<N::TransactionID>,
+    rng: &mut R,
+) -> Result<Self>
+```
+
+Beacon blocks are signed by a single private key and used for testing.
+
+#### Quorum Block (Production)
+
+```rust
+pub fn new_quorum(
+    previous_hash: N::BlockHash,
+    header: Header<N>,
+    subdag: Subdag<N>,
+    ratifications: Ratifications<N>,
+    solutions: Solutions<N>,
+    aborted_solution_ids: Vec<SolutionID<N>>,
+    transactions: Transactions<N>,
+    aborted_transaction_ids: Vec<N::TransactionID>,
+) -> Result<Self>
+```
+
+Quorum blocks are produced by the Narwhal consensus protocol and contain a subdag of certificates.
+
+### Block Properties
+
+#### Hash and Headers
+
+```rust
+// Block identification
+pub fn hash(&self) -> N::BlockHash
+pub fn previous_hash(&self) -> N::BlockHash
+pub fn header(&self) -> &Header<N>
+
+// Block metadata
+pub fn height(&self) -> u32
+pub fn round(&self) -> u64
+pub fn timestamp(&self) -> i64
+pub fn network(&self) -> u16
+```
+
+#### Consensus Information
+
+```rust
+// Authority (Beacon signature or Quorum subdag)
+pub fn authority(&self) -> &Authority<N>
+
+// Proof-of-work targets
+pub fn coinbase_target(&self) -> u64
+pub fn proof_target(&self) -> u64
+pub fn last_coinbase_target(&self) -> u64
+pub fn last_coinbase_timestamp(&self) -> i64
+
+// Cumulative metrics
+pub fn cumulative_weight(&self) -> u128
+pub fn cumulative_proof_target(&self) -> u128
+```
+
+#### Merkle Roots
+
+```rust
+// State roots
+pub fn previous_state_root(&self) -> N::StateRoot
+pub fn transactions_root(&self) -> Field<N>
+pub fn finalize_root(&self) -> Field<N>
+pub fn ratifications_root(&self) -> Field<N>
+pub fn solutions_root(&self) -> Field<N>
+```
+
+### Block Contents
+
+#### Accessing Components
+
+```rust
+// Solutions (proof-of-work)
+pub fn solutions(&self) -> &Solutions<N>
+pub fn aborted_solution_ids(&self) -> &Vec<SolutionID<N>>
+
+// Transactions
+pub fn transactions(&self) -> &Transactions<N>
+pub fn aborted_transaction_ids(&self) -> &Vec<N::TransactionID>
+
+// Ratifications (staking changes)
+pub fn ratifications(&self) -> &Ratifications<N>
+```
+
+#### Finding Elements
+
+```rust
+// By ID
+pub fn get_solution(&self, solution_id: &SolutionID<N>) -> Option<&Solution<N>>
+pub fn get_transaction(&self, tx_id: &N::TransactionID) -> Option<&Transaction<N>>
+pub fn get_confirmed_transaction(&self, tx_id: &N::TransactionID) 
+    -> Option<&ConfirmedTransaction<N>>
+
+// By content
+pub fn find_transaction_for_transition_id(&self, transition_id: &N::TransitionID) 
+    -> Option<&Transaction<N>>
+pub fn find_transaction_for_serial_number(&self, serial_number: &Field<N>) 
+    -> Option<&Transaction<N>>
+pub fn find_transaction_for_commitment(&self, commitment: &Field<N>) 
+    -> Option<&Transaction<N>>
+
+// Transitions and records
+pub fn find_transition(&self, transition_id: &N::TransitionID) 
+    -> Option<&Transition<N>>
+pub fn find_transition_for_serial_number(&self, serial_number: &Field<N>) 
+    -> Option<&Transition<N>>
+pub fn find_transition_for_commitment(&self, commitment: &Field<N>) 
+    -> Option<&Transition<N>>
+pub fn find_record(&self, commitment: &Field<N>) 
+    -> Option<&Record<N, Ciphertext<N>>>
+```
+
+#### Existence Checks
+
+```rust
+pub fn contains_transition(&self, transition_id: &N::TransitionID) -> bool
+pub fn contains_serial_number(&self, serial_number: &Field<N>) -> bool
+pub fn contains_commitment(&self, commitment: &Field<N>) -> bool
+```
+
+### Iterators
+
+#### Reference Iterators
+
+```rust
+// Solutions
+pub fn solution_ids(&self) -> Option<impl Iterator<Item = &SolutionID<N>>>
+
+// Transactions
+pub fn transaction_ids(&self) -> impl Iterator<Item = &N::TransactionID>
+pub fn deployments(&self) -> impl Iterator<Item = &ConfirmedTransaction<N>>
+pub fn executions(&self) -> impl Iterator<Item = &ConfirmedTransaction<N>>
+
+// Transitions
+pub fn transitions(&self) -> impl Iterator<Item = &Transition<N>>
+pub fn transition_ids(&self) -> impl Iterator<Item = &N::TransitionID>
+pub fn transition_public_keys(&self) -> impl Iterator<Item = &Group<N>>
+pub fn transition_commitments(&self) -> impl Iterator<Item = &Field<N>>
+
+// Records
+pub fn tags(&self) -> impl Iterator<Item = &Field<N>>
+pub fn input_ids(&self) -> impl Iterator<Item = &Field<N>>
+pub fn serial_numbers(&self) -> impl Iterator<Item = &Field<N>>
+pub fn output_ids(&self) -> impl Iterator<Item = &Field<N>>
+pub fn commitments(&self) -> impl Iterator<Item = &Field<N>>
+pub fn records(&self) -> impl Iterator<Item = (&Field<N>, &Record<N, Ciphertext<N>>)>
+pub fn nonces(&self) -> impl Iterator<Item = &Group<N>>
+
+// Fees
+pub fn transaction_fee_amounts(&self) -> impl Iterator<Item = Result<U64<N>>>
+```
+
+#### Consuming Iterators
+
+```rust
+pub fn into_transaction_ids(self) -> impl Iterator<Item = N::TransactionID>
+pub fn into_deployments(self) -> impl Iterator<Item = ConfirmedTransaction<N>>
+pub fn into_executions(self) -> impl Iterator<Item = ConfirmedTransaction<N>>
+pub fn into_transitions(self) -> impl Iterator<Item = Transition<N>>
+pub fn into_transition_ids(self) -> impl Iterator<Item = N::TransitionID>
+pub fn into_transition_public_keys(self) -> impl Iterator<Item = Group<N>>
+pub fn into_tags(self) -> impl Iterator<Item = Field<N>>
+pub fn into_serial_numbers(self) -> impl Iterator<Item = Field<N>>
+pub fn into_commitments(self) -> impl Iterator<Item = Field<N>>
+pub fn into_records(self) -> impl Iterator<Item = (Field<N>, Record<N, Ciphertext<N>>)>
+pub fn into_nonces(self) -> impl Iterator<Item = Group<N>>
+```
+
+## Header
+
+The block header contains metadata and Merkle roots for efficient verification.
+
+```rust
+pub struct Header<N: Network> {
+    previous_state_root: N::StateRoot,
+    transactions_root: Field<N>,
+    finalize_root: Field<N>,
+    ratifications_root: Field<N>,
+    solutions_root: Field<N>,
+    subdag_root: Field<N>,
+    metadata: Metadata<N>,
+}
+```
+
+### Creating Headers
+
+```rust
+pub fn from(
+    previous_state_root: N::StateRoot,
+    transactions_root: Field<N>,
+    finalize_root: Field<N>,
+    ratifications_root: Field<N>,
+    solutions_root: Field<N>,
+    subdag_root: Field<N>,
+    metadata: Metadata<N>,
+) -> Result<Self>
+```
+
+Headers are automatically validated on creation to ensure well-formedness.
+
+### Header Validation
+
+```rust
+// Check if header is valid
+pub fn is_valid(&self) -> bool
+
+// Get detailed validation errors
+pub fn check_validity(&self) -> Result<()>
+```
+
+**Validation rules:**
+- Height 0 blocks must be genesis blocks
+- Non-genesis blocks cannot have zero roots (except solutions_root and subdag_root)
+- Metadata must be valid
+
+### Genesis Headers
+
+Genesis blocks have special properties:
+- Height is 0
+- Previous state root is zero
+- Round is 0
+- All validators start with equal stake
+
+```rust
+// Check if this is a genesis header
+pub fn is_genesis(&self) -> Result<bool> {
+    Ok(self.height() == 0)
+}
+```
+
+## Metadata
+
+Block metadata contains consensus and timing information.
+
+```rust
+pub struct Metadata<N: Network> {
+    network: u16,
+    round: u64,
+    height: u32,
+    cumulative_weight: u128,
+    cumulative_proof_target: u128,
+    coinbase_target: u64,
+    proof_target: u64,
+    last_coinbase_target: u64,
+    last_coinbase_timestamp: i64,
+    timestamp: i64,
+}
+```
+
+### Creating Metadata
+
+```rust
+pub fn new(
+    network: u16,
+    round: u64,
+    height: u32,
+    cumulative_weight: u128,
+    cumulative_proof_target: u128,
+    coinbase_target: u64,
+    proof_target: u64,
+    last_coinbase_target: u64,
+    last_coinbase_timestamp: i64,
+    timestamp: i64,
+) -> Result<Self>
+```
+
+### Metadata Fields
+
+```rust
+// Network and block position
+pub fn network(&self) -> u16
+pub fn round(&self) -> u64
+pub fn height(&self) -> u32
+
+// Cumulative metrics
+pub fn cumulative_weight(&self) -> u128
+pub fn cumulative_proof_target(&self) -> u128
+
+// Proof-of-work targets
+pub fn coinbase_target(&self) -> u64
+pub fn proof_target(&self) -> u64
+pub fn last_coinbase_target(&self) -> u64
+
+// Timestamps
+pub fn timestamp(&self) -> i64
+pub fn last_coinbase_timestamp(&self) -> i64
+```
+
+## Transaction
+
+Transactions represent state transitions on the blockchain. See the [Synthesizer documentation](/api/synthesizer/transaction) for detailed transaction types.
+
+### Transaction Types
+
+- **Deploy**: Deploys a new program to the network
+- **Execute**: Executes a function in a deployed program
+- **Fee**: Standalone fee transaction
+
+### Confirmed Transactions
+
+```rust
+pub struct ConfirmedTransaction<N: Network> {
+    index: u32,
+    transaction: Transaction<N>,
+    finalize_operations: Vec<FinalizeOperation<N>>,
+}
+```
+
+Confirmed transactions include:
+- The transaction index in the block
+- The transaction itself
+- Finalize operations (state changes) performed
+
+## Transition
+
+Transitions are the atomic units of execution within transactions.
+
+```rust
+pub struct Transition<N: Network> {
+    id: N::TransitionID,
+    program_id: ProgramID<N>,
+    function_name: Identifier<N>,
+    inputs: Vec<Input<N>>,
+    outputs: Vec<Output<N>>,
+    proof: Proof<N>,
+    tpk: Group<N>,
+    tcm: Field<N>,
+}
+```
+
+### Transition Components
+
+- **ID**: Unique transition identifier
+- **Program ID**: The program being executed
+- **Function name**: The function being called
+- **Inputs**: Function inputs (records, private data, public data)
+- **Outputs**: Function outputs (records, data)
+- **Proof**: Zero-knowledge proof of correct execution
+- **TPK**: Transition public key
+- **TCM**: Transition commitment
+
+### Input and Output Types
+
+**Inputs:**
+- `Constant`: Public constant input
+- `Public`: Public variable input
+- `Private`: Private variable input
+- `Record`: Record input (consumes a record)
+- `ExternalRecord`: Record from another program
+
+**Outputs:**
+- `Constant`: Public constant output
+- `Public`: Public variable output
+- `Private`: Private variable output
+- `Record`: Record output (creates a record)
+- `ExternalRecord`: Record for another program
+
+## Ratifications
+
+Ratifications represent consensus-level state changes like validator bonding/unbonding.
+
+```rust
+pub struct Ratifications<N: Network>(Vec<Ratify<N>>);
+```
+
+### Ratify Types
+
+```rust
+pub enum Ratify<N: Network> {
+    Genesis(Committee<N>),
+    BlockReward(u64),
+    PuzzleReward(u64),
+}
+```
+
+- **Genesis**: Establishes the initial committee
+- **BlockReward**: Distributes block rewards to validators
+- **PuzzleReward**: Distributes coinbase rewards to provers
+
+## Solutions
+
+Solutions are proof-of-work submissions for coinbase rewards.
+
+```rust
+pub struct Solutions<N: Network>(Option<PuzzleSolutions<N>>);
+
+pub struct PuzzleSolutions<N: Network> {
+    solutions: Vec<(SolutionID<N>, Solution<N>)>,
+}
+```
+
+### Solution Structure
+
+```rust
+pub struct Solution<N: Network> {
+    address: Address<N>,
+    counter: u64,
+    target: u64,
+    solution_commitment: Field<N>,
+    proof: Proof<N>,
+}
+```
+
+Each solution contains:
+- **Address**: Prover's address for rewards
+- **Counter**: Nonce for the proof-of-work
+- **Target**: Difficulty target the solution meets
+- **Solution commitment**: Commitment to the solution
+- **Proof**: Zero-knowledge proof of work
+
+## Transactions
+
+The `Transactions` type is a collection of confirmed transactions in a block.
+
+```rust
+pub struct Transactions<N: Network> {
+    transactions: IndexMap<N::TransactionID, ConfirmedTransaction<N>>,
+}
+```
+
+### Constants
+
+```rust
+impl<N: Network> Transactions<N> {
+    /// Maximum number of transactions per block
+    pub const MAX_TRANSACTIONS: usize = usize::pow(2, TRANSACTIONS_DEPTH as u32);
+    
+    /// Maximum number of aborted transactions
+    pub fn max_aborted_transactions() -> usize {
+        Self::MAX_TRANSACTIONS
+    }
+}
+```
+
+## Authority
+
+Block authority determines how the block was produced.
+
+```rust
+pub enum Authority<N: Network> {
+    Beacon(Signature<N>),
+    Quorum(Subdag<N>),
+}
+```
+
+- **Beacon**: Single-signature authority (testing only)
+- **Quorum**: Narwhal consensus subdag (production)
+
+## Example: Processing a Block
+
+```rust
+use snarkvm_ledger::prelude::*;
+
+// Get a block from the ledger
+let block = ledger.get_block(height)?;
+
+// Access block metadata
+println!("Block {} at height {}", block.hash(), block.height());
+println!("Round: {}, Timestamp: {}", block.round(), block.timestamp());
+
+// Iterate through transactions
+for tx in block.transactions().transaction_ids() {
+    println!("Transaction: {}", tx);
+}
+
+// Check for solutions
+if let Some(solution_ids) = block.solution_ids() {
+    for solution_id in solution_ids {
+        println!("Solution: {}", solution_id);
+    }
+}
+
+// Find specific elements
+if let Some(transition) = block.find_transition(&transition_id) {
+    println!("Found transition: {:?}", transition);
+}
+
+// Check membership
+if block.contains_commitment(&commitment) {
+    println!("Block contains commitment");
+}
+```
+
+## Next Steps
+
+- [Ledger Overview](/api/ledger/overview) - Main ledger operations
+- [Storage](/api/ledger/store) - Persistent storage layer
+- [Query Operations](/api/ledger/query) - State querying

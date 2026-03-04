@@ -1,0 +1,370 @@
+---
+title: Executing Transactions
+description: Learn how to execute program functions and generate zero-knowledge proofs
+---
+
+This guide covers executing transactions on the Aleo network using snarkVM, including authorization, execution, and fee handling.
+
+## Transaction Types
+
+snarkVM supports several transaction types:
+
+- **Execute**: Call a program function with inputs
+- **Deploy**: Deploy a new program to the network
+- **Fee**: Pay transaction fees (public or private)
+
+## Basic Execution
+
+Execute a program function using `VM::execute`:
+
+```rust
+use snarkvm_synthesizer::VM;
+use snarkvm_console::account::PrivateKey;
+use snarkvm_console::program::Value;
+use snarkvm_console::network::MainnetV0;
+use rand::thread_rng;
+
+type CurrentNetwork = MainnetV0;
+
+let rng = &mut thread_rng();
+
+// Initialize private key
+let private_key = PrivateKey::<CurrentNetwork>::new(rng)?;
+
+// Prepare inputs
+let address = Address::try_from(&private_key)?;
+let inputs = [
+    Value::<CurrentNetwork>::from_str(&address.to_string())?,
+    Value::<CurrentNetwork>::from_str("1000000u64")?,
+];
+
+// Execute the function
+let transaction = vm.execute(
+    &private_key,
+    ("credits.aleo", "transfer_public"),
+    inputs.iter(),
+    None, // No fee record (uses public fee)
+    0,    // Priority fee in microcredits
+    None, // Use default query
+    rng,
+)?;
+
+println!("Transaction ID: {}", transaction.id());
+```
+
+## Execution with Response
+
+Get both the transaction and the execution response:
+
+```rust
+// Execute with response to access output values
+let (transaction, response) = vm.execute_with_response(
+    &private_key,
+    ("credits.aleo", "transfer_public"),
+    inputs.iter(),
+    None,
+    0,
+    None,
+    rng,
+)?;
+
+// Access outputs from the response
+for (i, output) in response.outputs().iter().enumerate() {
+    println!("Output {}: {:?}", i, output);
+}
+```
+
+## Two-Step Authorization and Execution
+
+For more control, separate authorization from execution:
+
+<Steps>
+
+### Authorize the Call
+
+Create an authorization without generating proofs:
+
+```rust
+// Authorize the function call
+let authorization = vm.authorize(
+    &private_key,
+    "credits.aleo",
+    "transfer_public",
+    [
+        &address.to_string(),
+        "1000000u64",
+    ],
+    rng,
+)?;
+
+println!("Authorization created");
+```
+
+### Execute the Authorization
+
+Generate the proof and create the transaction:
+
+```rust
+// Execute the authorized call
+let transaction = vm.execute_authorization(
+    authorization,
+    None, // No fee authorization (no fee)
+    None, // Use default query
+    rng,
+)?;
+
+println!("Transaction executed: {}", transaction.id());
+```
+
+### Authorize the Fee
+
+For transactions requiring fees, authorize the fee separately:
+
+```rust
+use snarkvm_console::types::Field;
+
+// Get execution ID
+let execution_id = transaction.execution().unwrap().to_execution_id()?;
+
+// Authorize public fee
+let fee_authorization = vm.authorize_fee_public(
+    &private_key,
+    10_000_000, // Base fee in microcredits
+    100,        // Priority fee in microcredits
+    execution_id,
+    rng,
+)?;
+
+// Execute the fee authorization
+let fee = vm.execute_fee_authorization(fee_authorization, None, rng)?;
+```
+
+</Steps>
+
+## Fee Handling
+
+### Public Fees
+
+Pay fees from your public balance:
+
+```rust
+// Execute with public fee
+let transaction = vm.execute(
+    &private_key,
+    ("credits.aleo", "transfer_public"),
+    inputs.iter(),
+    None,    // No fee record = public fee
+    10_000,  // Priority fee
+    None,
+    rng,
+)?;
+```
+
+### Private Fees
+
+Pay fees using a credits record:
+
+```rust
+use snarkvm_console::account::ViewKey;
+use snarkvm_ledger::Ledger;
+
+// Get view key
+let view_key = ViewKey::try_from(&private_key)?;
+
+// Find unspent credits records
+let records = ledger.find_unspent_credits_records(&view_key)?;
+let fee_record = records.values().next().cloned();
+
+// Execute with private fee
+let transaction = vm.execute(
+    &private_key,
+    ("credits.aleo", "transfer_public"),
+    inputs.iter(),
+    fee_record, // Use this record for fees
+    10_000,
+    None,
+    rng,
+)?;
+```
+
+<Note>
+Private fees require at least one unspent credits record. Use `find_unspent_credits_records` to locate available records.
+</Note>
+
+## Working with Records as Inputs
+
+Many functions require record inputs:
+
+```rust
+// Find a record to use as input
+let records = ledger.find_unspent_credits_records(&view_key)?;
+let input_record = records.values().next().unwrap().clone();
+
+// Use the record as input
+let inputs = [
+    Value::<CurrentNetwork>::Record(input_record),
+    Value::<CurrentNetwork>::from_str("500000u64")?,
+];
+
+let transaction = vm.execute(
+    &private_key,
+    ("credits.aleo", "split"),
+    inputs.iter(),
+    None,
+    0,
+    None,
+    rng,
+)?;
+```
+
+## Transaction Verification
+
+Verify a transaction before broadcasting:
+
+```rust
+// Verify the transaction
+vm.check_transaction(&transaction, None, rng)?;
+
+println!("Transaction is valid");
+```
+
+## Execution Cost Calculation
+
+Calculate the cost before executing:
+
+```rust
+use snarkvm_synthesizer_process::execution_cost;
+use snarkvm_ledger_block::ConsensusVersion;
+
+// Authorize first
+let authorization = vm.authorize(&private_key, "credits.aleo", "transfer_public", inputs, rng)?;
+
+// Execute to get execution object
+let query = Query::VM(vm.block_store().clone());
+let (execution, _response) = vm.execute_authorization_raw(authorization, &query, rng)?;
+
+// Calculate cost
+let consensus_version = CurrentNetwork::CONSENSUS_VERSION(query.current_block_height()?)?;
+let (cost, (storage_cost, finalize_cost)) = execution_cost(
+    &vm.process().read(),
+    &execution,
+    consensus_version,
+)?;
+
+println!("Execution cost: {} microcredits", cost);
+println!("  Storage cost: {} microcredits", storage_cost);
+println!("  Finalize cost: {} microcredits", finalize_cost);
+```
+
+## Error Handling
+
+Handle common execution errors:
+
+```rust
+match vm.execute(
+    &private_key,
+    ("credits.aleo", "transfer_public"),
+    inputs.iter(),
+    None,
+    0,
+    None,
+    rng,
+) {
+    Ok(transaction) => {
+        println!("Transaction created: {}", transaction.id());
+    }
+    Err(e) => {
+        eprintln!("Execution failed: {}", e);
+        // Common errors:
+        // - Insufficient balance
+        // - Invalid inputs
+        // - Program not found
+        // - Function not found
+        // - Constraint violations
+    }
+}
+```
+
+## Advanced: External Calls
+
+Programs can call other programs:
+
+```rust
+let program_source = r"
+import credits.aleo;
+
+program wrapper.aleo;
+
+function transfer_wrapper:
+    input r0 as address.public;
+    input r1 as u64.public;
+    call credits.aleo/transfer_public r0 r1 into r2;
+    output r2 as credits.aleo/transfer_public.future;
+";
+
+// Deploy the wrapper program
+let program = Program::<CurrentNetwork>::from_str(program_source)?;
+let deploy_tx = vm.deploy(&private_key, &program, fee_record, 0, None, rng)?;
+
+// Execute the wrapper function
+let inputs = [
+    Value::from_str(&recipient.to_string())?,
+    Value::from_str("1000000u64")?,
+];
+
+let transaction = vm.execute(
+    &private_key,
+    ("wrapper.aleo", "transfer_wrapper"),
+    inputs.iter(),
+    None,
+    0,
+    None,
+    rng,
+)?;
+```
+
+## Performance Optimization
+
+### Parallel Execution
+
+Process multiple transactions in parallel when they don't conflict:
+
+```rust
+use rayon::prelude::*;
+
+let transactions: Vec<_> = inputs_list
+    .par_iter()
+    .map(|inputs| {
+        vm.execute(
+            &private_key,
+            ("credits.aleo", "transfer_public"),
+            inputs.iter(),
+            None,
+            0,
+            None,
+            &mut thread_rng(),
+        )
+    })
+    .collect::<Result<Vec<_>, _>>()?;
+```
+
+### Reuse Authorizations
+
+Authorize once, execute multiple times with different fee strategies:
+
+```rust
+let authorization = vm.authorize(&private_key, "credits.aleo", "transfer_public", inputs, rng)?;
+
+// Execute with no fee
+let tx_no_fee = vm.execute_authorization(authorization.clone(), None, None, rng)?;
+
+// Execute with priority fee
+let fee_auth = vm.authorize_fee_public(&private_key, 10_000, 1000, execution_id, rng)?;
+let tx_with_fee = vm.execute_authorization(authorization, Some(fee_auth), None, rng)?;
+```
+
+## Next Steps
+
+- Learn about [managing records](/guides/managing-records) to track transaction outputs
+- Explore [deploying programs](/guides/deploying-programs) to add functionality
+- Understand [working with accounts](/guides/working-with-accounts) for key management

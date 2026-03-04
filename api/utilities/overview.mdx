@@ -1,0 +1,410 @@
+---
+title: Utilities Overview
+description: Core utilities for serialization, parallelization, and common operations
+---
+
+The `snarkvm-utilities` crate provides foundational utilities used throughout SnarkVM. It has no dependencies on other SnarkVM crates, making it the base of the dependency tree.
+
+## Architecture
+
+The utilities crate is organized into several modules:
+
+- **Serialization**: Traits and implementations for canonical serialization/deserialization
+- **Parallel**: Macros and utilities for parallel execution
+- **Bits**: Bit manipulation and iteration
+- **Bytes**: Byte operations and conversions
+- **BigInteger**: Big integer implementations for field arithmetic
+- **BitIterator**: Efficient iteration over bits
+- **Errors**: Common error types
+- **Rand**: Randomness utilities
+
+## Key Features
+
+### Zero Dependencies on SnarkVM
+
+The utilities crate is self-contained and has no dependencies on other SnarkVM crates. This makes it suitable for:
+- Reuse in other projects
+- Testing without pulling in the entire VM
+- Building new SnarkVM components
+
+### Feature Flags
+
+```toml
+[dependencies]
+snarkvm-utilities = { version = "*", features = ["derive", "parallel"] }
+```
+
+**Available features:**
+
+- **`derive`**: Enable derive macros for serialization traits
+- **`serial`**: Force serial execution (disable parallelism)
+- **`wasm`**: WebAssembly compatibility
+
+### Derive Macros
+
+When the `derive` feature is enabled, you can derive serialization traits:
+
+```rust
+use snarkvm_utilities::serialize::*;
+
+#[derive(CanonicalSerialize, CanonicalDeserialize)]
+struct MyStruct {
+    a: u64,
+    b: Vec<u8>,
+}
+```
+
+## Module Overview
+
+### Serialization
+
+Canonical serialization in little-endian format with compression support.
+
+```rust
+use snarkvm_utilities::serialize::*;
+
+// Serialize with compression
+let mut bytes = Vec::new();
+value.serialize_compressed(&mut bytes)?;
+
+// Deserialize with validation
+let value: MyType = CanonicalDeserialize::deserialize_compressed(&bytes[..])?;
+```
+
+See [Serialization](/api/utilities/serialization) for details.
+
+### Parallel Execution
+
+Conditional parallel execution with fallback to serial when the `serial` feature is enabled.
+
+```rust
+use snarkvm_utilities::{cfg_iter, cfg_into_iter};
+
+// Automatically parallel or serial based on features
+let results: Vec<_> = cfg_iter!(data)
+    .map(|item| expensive_computation(item))
+    .collect();
+```
+
+See [Parallel Execution](/api/utilities/parallel) for details.
+
+### Bits and Bytes
+
+Utilities for bit and byte manipulation.
+
+```rust
+use snarkvm_utilities::{ToBits, FromBits};
+
+// Convert to bits
+let bits = value.to_bits_le();
+
+// Convert from bits
+let value = MyType::from_bits_le(&bits)?;
+```
+
+### BigInteger
+
+Big integer implementations for cryptographic field arithmetic.
+
+```rust
+use snarkvm_utilities::BigInteger256;
+
+let a = BigInteger256::from(12345u64);
+let b = BigInteger256::from(67890u64);
+let c = a.add(&b);
+```
+
+### BitIterator
+
+Efficient iteration over the bits of integers and field elements.
+
+```rust
+use snarkvm_utilities::BitIteratorBE;
+
+for bit in BitIteratorBE::new(&value) {
+    println!("Bit: {}", bit);
+}
+```
+
+## Error Handling
+
+The utilities crate provides common error types:
+
+```rust
+use snarkvm_utilities::error;
+
+pub type Result<T> = std::result::Result<T, Box<dyn error::Error>>;
+
+// Use in your functions
+fn my_function() -> Result<()> {
+    // ...
+    Ok(())
+}
+```
+
+### SerializationError
+
+Specialized error type for serialization operations:
+
+```rust
+use snarkvm_utilities::serialize::SerializationError;
+
+fn serialize_data(data: &[u8]) -> Result<Vec<u8>, SerializationError> {
+    if data.is_empty() {
+        return Err(SerializationError::InvalidData);
+    }
+    // ...
+}
+```
+
+## Randomness
+
+Utilities for random number generation in tests and cryptographic operations.
+
+```rust
+use snarkvm_utilities::TestRng;
+use rand::Rng;
+
+let mut rng = TestRng::default();
+let random_value: u64 = rng.gen();
+```
+
+## Iteration Utilities
+
+Helper types for advanced iteration patterns.
+
+```rust
+use snarkvm_utilities::iterator::*;
+
+// Zip with equality check
+let a = vec![1, 2, 3];
+let b = vec![4, 5, 6];
+
+// This ensures both iterators have the same length
+for (x, y) in a.iter().zip_eq(b.iter()) {
+    println!("{} + {} = {}", x, y, x + y);
+}
+```
+
+## Deferred Execution
+
+Execute code when a guard is dropped.
+
+```rust
+use snarkvm_utilities::defer;
+
+{
+    let _guard = defer!({
+        println!("This executes when the scope ends");
+    });
+    
+    // Do work here
+    println!("Doing work...");
+} // Guard is dropped here, deferred code runs
+```
+
+## Common Patterns
+
+### Bit Manipulation
+
+```rust
+use snarkvm_utilities::{ToBits, FromBits};
+
+// Serialize to bits
+let bits = value.to_bits_le(); // Little-endian
+let bits = value.to_bits_be(); // Big-endian
+
+// Deserialize from bits
+let value = MyType::from_bits_le(&bits)?;
+let value = MyType::from_bits_be(&bits)?;
+```
+
+### Byte Conversion
+
+```rust
+use snarkvm_utilities::{ToBytes, FromBytes};
+
+// Serialize to bytes
+let mut bytes = Vec::new();
+value.write_le(&mut bytes)?;
+
+// Deserialize from bytes
+let value = MyType::read_le(&bytes[..])?;
+```
+
+### Parallel Processing
+
+```rust
+use snarkvm_utilities::{cfg_iter, cfg_into_iter};
+
+// Parallel map
+let results: Vec<_> = cfg_iter!(data)
+    .map(|item| process(item))
+    .collect();
+
+// Parallel filter_map
+let results: Vec<_> = cfg_iter!(data)
+    .filter_map(|item| try_process(item))
+    .collect();
+
+// Parallel fold
+let sum = cfg_iter!(data)
+    .fold(|| 0, |acc, x| acc + x)
+    .sum::<i32>();
+```
+
+### Batch Processing
+
+```rust
+use snarkvm_utilities::ExecutionPool;
+
+let mut pool = ExecutionPool::with_capacity(10);
+
+// Add jobs
+for item in items {
+    pool.add_job(move || process(item));
+}
+
+// Execute all jobs (potentially in parallel)
+let results = pool.execute_all();
+```
+
+## Platform Compatibility
+
+### Standard Targets
+
+The utilities crate works on all standard Rust targets:
+- x86_64
+- aarch64
+- armv7
+
+### WebAssembly
+
+With the `wasm` feature, the crate is compatible with WebAssembly:
+
+```toml
+[dependencies]
+snarkvm-utilities = { version = "*", features = ["wasm"] }
+```
+
+This disables features that aren't available in WASM (like threading).
+
+### No Unsafe Code
+
+The utilities crate forbids unsafe code:
+
+```rust
+#![forbid(unsafe_code)]
+```
+
+This ensures memory safety and makes the crate suitable for security-critical applications.
+
+## Testing Utilities
+
+The crate provides utilities specifically for testing:
+
+### TestRng
+
+Deterministic random number generator for reproducible tests:
+
+```rust
+use snarkvm_utilities::TestRng;
+
+let rng1 = TestRng::default();
+let rng2 = TestRng::default();
+
+// Both generate the same sequence
+assert_eq!(rng1.gen::<u64>(), rng2.gen::<u64>());
+```
+
+### Dev Println
+
+Conditional printing for development:
+
+```rust
+dev_println!("Debug info: {}", value);
+```
+
+This only prints when the `dev_println` feature is enabled, useful for debugging without cluttering test output.
+
+## Performance
+
+### CPU Detection
+
+The parallel module detects the CPU type to optimize thread usage:
+
+```rust
+use snarkvm_utilities::max_available_threads;
+
+let thread_count = max_available_threads();
+println!("Using {} threads", thread_count);
+```
+
+**Behavior:**
+- **Intel CPUs**: Uses physical core count (avoiding hyperthreading overhead)
+- **AMD CPUs**: Uses all available threads
+- **Unknown**: Uses all available threads
+
+### Zero-Cost Abstractions
+
+The parallel macros compile to serial code when `serial` feature is enabled:
+
+```rust
+// With parallel feature (default)
+cfg_iter!(data).map(|x| x * 2).collect()
+// Expands to: data.par_iter().map(|x| x * 2).collect()
+
+// With serial feature
+cfg_iter!(data).map(|x| x * 2).collect()
+// Expands to: data.iter().map(|x| x * 2).collect()
+```
+
+No runtime overhead when parallelism is disabled.
+
+## Best Practices
+
+### Use Appropriate Serialization Methods
+
+```rust
+// For maximum compatibility: uncompressed
+value.serialize_uncompressed(&mut writer)?;
+
+// For minimum size: compressed
+value.serialize_compressed(&mut writer)?;
+
+// For custom control: with mode
+value.serialize_with_mode(&mut writer, Compress::Yes)?;
+```
+
+### Pre-allocate Collections
+
+```rust
+// Bad
+let mut vec = Vec::new();
+for item in items {
+    vec.push(process(item));
+}
+
+// Good
+let mut vec = Vec::with_capacity(items.len());
+for item in items {
+    vec.push(process(item));
+}
+```
+
+### Use Parallel Iterators Appropriately
+
+```rust
+// Small data: serial is faster
+let data = vec![1, 2, 3, 4, 5];
+let result: Vec<_> = data.iter().map(|x| x * 2).collect();
+
+// Large data: parallel is faster
+let data = vec![0; 1_000_000];
+let result: Vec<_> = cfg_iter!(data).map(|x| expensive_op(x)).collect();
+```
+
+## Next Steps
+
+- [Serialization](/api/utilities/serialization) - Detailed serialization traits and methods
+- [Parallel Execution](/api/utilities/parallel) - Parallel processing utilities and macros

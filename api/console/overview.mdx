@@ -1,0 +1,127 @@
+---
+title: Console Overview
+description: Overview of the snarkVM Console module and its core components
+---
+
+The `console` crate provides the foundational plaintext types and data structures for the snarkVM virtual machine. It contains implementations for accounts, cryptographic primitives, program types, and network configurations.
+
+## Architecture
+
+The console module is organized into several sub-crates:
+
+- **account** - Account types and cryptographic key management
+- **types** - Primitive data types (Field, Group, Scalar, Boolean, Integer, String)
+- **program** - Program data structures (Identifier, Value, Plaintext, Record, etc.)
+- **network** - Network traits and implementations (MainnetV0, TestnetV0, CanaryV0)
+- **algorithms** - Cryptographic algorithms (BHP, Poseidon, Pedersen)
+- **collections** - Data structures like Merkle trees
+
+## Module Structure
+
+```rust
+pub use snarkvm_console_account as account;
+pub use snarkvm_console_algorithms as algorithms;
+pub use snarkvm_console_collections as collections;
+pub use snarkvm_console_network as network;
+pub use snarkvm_console_program as program;
+pub use snarkvm_console_types as types;
+```
+
+## Core Features
+
+### Account Management
+
+The account module provides types for:
+- Private keys and key derivation
+- View keys for decryption
+- Compute keys for program execution
+- Addresses derived from keys
+- Digital signatures
+
+### Type System
+
+The types module implements:
+- Field elements over the base field
+- Group elements on elliptic curves
+- Scalar elements over the scalar field
+- Boolean values
+- Signed and unsigned integers (I8-I128, U8-U128)
+- String types
+- Address types
+
+### Program Data Structures
+
+The program module defines:
+- Literals (primitive values)
+- Plaintext (literals, structs, arrays)
+- Records (encrypted state with owner)
+- Values (plaintext, record, or future)
+- Identifiers and program IDs
+- Request/Response types for function calls
+
+### Network Abstractions
+
+The network module provides:
+- Network trait with consensus parameters
+- MainnetV0, TestnetV0, CanaryV0 implementations
+- Cryptographic function interfaces (hash, commit, merkle trees)
+- Consensus version heights and configuration
+
+## Generic Network Parameter
+
+Most types in the console module are generic over a `Network` type parameter:
+
+```rust
+pub trait Network: Environment + ... {
+    const ID: u16;
+    const NAME: &'static str;
+    const GENESIS_TIMESTAMP: i64;
+    // ... many more network parameters
+}
+```
+
+This allows the same code to work across different Aleo networks (mainnet, testnet, etc.) with different consensus rules and cryptographic parameters.
+
+## Example Usage
+
+```rust
+use snarkvm_console::{
+    account::{PrivateKey, Address},
+    types::{Field, Group, Scalar},
+    network::MainnetV0,
+};
+
+type CurrentNetwork = MainnetV0;
+
+// Generate a new private key
+let private_key = PrivateKey::<CurrentNetwork>::new(&mut rng)?;
+
+// Derive the address
+let address = Address::try_from(&private_key)?;
+
+// Create field elements
+let field = Field::<CurrentNetwork>::from_u64(42);
+```
+
+## Related Modules
+
+<CardGroup cols={2}>
+  <Card title="Account Types" icon="key" href="/api/console/account">
+    Private keys, view keys, addresses, and signatures
+  </Card>
+  <Card title="Console Types" icon="hashtag" href="/api/console/types">
+    Field, Group, Scalar, Boolean, Integer, and String types
+  </Card>
+  <Card title="Program Types" icon="code" href="/api/console/program">
+    Identifiers, Values, Plaintext, Records, and program data
+  </Card>
+  <Card title="Network Traits" icon="network-wired" href="/api/console/network">
+    Network implementations and consensus parameters
+  </Card>
+</CardGroup>
+
+## See Also
+
+- [Circuit Module](/api/circuit) - Circuit equivalents of console types
+- [Synthesizer](/api/synthesizer) - Program execution using console types
+- [Algorithms](/api/algorithms) - Cryptographic primitives

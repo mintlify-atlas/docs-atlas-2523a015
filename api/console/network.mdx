@@ -1,0 +1,565 @@
+---
+title: Network Types and Traits
+description: Network trait, implementations, and consensus parameters
+---
+
+The `network` module defines the `Network` trait and its implementations (MainnetV0, TestnetV0, CanaryV0). Networks specify consensus parameters, cryptographic functions, and blockchain configuration.
+
+## Network Trait
+
+The core trait that defines a network's parameters and capabilities.
+
+### Declaration
+
+```rust
+pub trait Network:
+    'static
+    + Environment
+    + Copy
+    + Clone
+    + Debug
+    + Eq
+    + PartialEq
+    + core::hash::Hash
+    + Serialize
+    + DeserializeOwned
+    + for<'a> Deserialize<'a>
+    + Send
+    + Sync
+{
+    // Constants and methods
+}
+```
+
+### Identity Constants
+
+<ResponseField name="ID" type="u16">
+  The network ID (unique identifier)
+</ResponseField>
+
+<ResponseField name="NAME" type="&'static str">
+  The long network name (e.g., "Mainnet")
+</ResponseField>
+
+<ResponseField name="SHORT_NAME" type="&'static str">
+  The short network name (e.g., "mainnet")
+</ResponseField>
+
+### Genesis Parameters
+
+<ResponseField name="GENESIS_TIMESTAMP" type="i64">
+  The fixed timestamp of the genesis block
+</ResponseField>
+
+<ResponseField name="GENESIS_COINBASE_TARGET" type="u64">
+  The genesis block coinbase target
+</ResponseField>
+
+<ResponseField name="GENESIS_PROOF_TARGET" type="u64">
+  The genesis block proof target
+</ResponseField>
+
+### Supply and Economics
+
+<ResponseField name="STARTING_SUPPLY" type="u64">
+  Starting supply of Aleo credits (1.5B)
+</ResponseField>
+
+<ResponseField name="MAX_SUPPLY" type="u64">
+  Maximum supply of Aleo credits (5B)
+</ResponseField>
+
+<ResponseField name="MAX_SUPPLY_LIMIT_HEIGHT" type="u32">
+  Block height that upper bounds total supply to 5B
+</ResponseField>
+
+<ResponseField name="DEPLOYMENT_FEE_MULTIPLIER" type="u64">
+  Cost in microcredits per byte for deployment (1,000)
+</ResponseField>
+
+<ResponseField name="CONSTRUCTOR_FEE_MULTIPLIER" type="u64">
+  Multiplier in microcredits for each constructor command (100)
+</ResponseField>
+
+<ResponseField name="SYNTHESIS_FEE_MULTIPLIER" type="u64">
+  Cost in microcredits per constraint (25)
+</ResponseField>
+
+<ResponseField name="MAX_FEE" type="u64">
+  Maximum microcredits that can be spent as a fee (1T)
+</ResponseField>
+
+<ResponseField name="TRANSACTION_SPEND_LIMIT" type="[(ConsensusVersion, u64); 2]">
+  Transaction spend limits by consensus version
+</ResponseField>
+
+### Timing Parameters
+
+<ResponseField name="BLOCK_TIME" type="u16">
+  Expected time per block in seconds (10)
+</ResponseField>
+
+<ResponseField name="ANCHOR_TIME" type="u16">
+  Anchor time in seconds (25)
+</ResponseField>
+
+<ResponseField name="ANCHOR_HEIGHT" type="u32">
+  Expected blocks to reach coinbase target (ANCHOR_TIME / BLOCK_TIME)
+</ResponseField>
+
+<ResponseField name="NUM_BLOCKS_PER_EPOCH" type="u32">
+  Number of blocks per epoch (360 blocks ≈ 1 hour)
+</ResponseField>
+
+### Data Limits
+
+<ResponseField name="MAX_DATA_ENTRIES" type="usize">
+  Maximum number of entries in data (32)
+</ResponseField>
+
+<ResponseField name="MAX_DATA_DEPTH" type="usize">
+  Maximum recursive depth of an entry (32)
+</ResponseField>
+
+<ResponseField name="MAX_DATA_SIZE_IN_FIELDS" type="u32">
+  Maximum number of fields in data (must not exceed u16::MAX)
+</ResponseField>
+
+<ResponseField name="MIN_STRUCT_ENTRIES" type="usize">
+  Minimum number of entries in a struct (1)
+</ResponseField>
+
+<ResponseField name="MAX_STRUCT_ENTRIES" type="usize">
+  Maximum number of entries in a struct (32)
+</ResponseField>
+
+<ResponseField name="MIN_ARRAY_ELEMENTS" type="usize">
+  Minimum number of elements in an array (1)
+</ResponseField>
+
+<ResponseField name="MAX_ARRAY_ELEMENTS" type="[(ConsensusVersion, usize); 3]">
+  Maximum array elements by consensus version (32 → 512 → 2048)
+</ResponseField>
+
+<ResponseField name="MIN_RECORD_ENTRIES" type="usize">
+  Minimum number of entries in a record (1, for owner)
+</ResponseField>
+
+<ResponseField name="MAX_RECORD_ENTRIES" type="usize">
+  Maximum number of entries in a record (33)
+</ResponseField>
+
+### Program Limits
+
+<ResponseField name="MAX_PROGRAM_SIZE" type="[(ConsensusVersion, usize); 2]">
+  Maximum program size in characters (100 kB → 512 kB)
+</ResponseField>
+
+<ResponseField name="MAX_MAPPINGS" type="usize">
+  Maximum number of mappings in a program (31)
+</ResponseField>
+
+<ResponseField name="MAX_FUNCTIONS" type="usize">
+  Maximum number of functions in a program (31)
+</ResponseField>
+
+<ResponseField name="MAX_STRUCTS" type="usize">
+  Maximum number of structs in a program (310)
+</ResponseField>
+
+<ResponseField name="MAX_RECORDS" type="usize">
+  Maximum number of records in a program (310)
+</ResponseField>
+
+<ResponseField name="MAX_CLOSURES" type="usize">
+  Maximum number of closures in a program (62)
+</ResponseField>
+
+<ResponseField name="MAX_INSTRUCTIONS" type="usize">
+  Maximum number of instructions in a closure/function (65,535)
+</ResponseField>
+
+<ResponseField name="MAX_COMMANDS" type="usize">
+  Maximum number of commands in finalize (65,535)
+</ResponseField>
+
+<ResponseField name="MAX_WRITES" type="[(ConsensusVersion, u16); 2]">
+  Maximum write commands in finalize (16 → 32)
+</ResponseField>
+
+<ResponseField name="MAX_INPUTS" type="usize">
+  Maximum number of inputs per transition (16)
+</ResponseField>
+
+<ResponseField name="MAX_OUTPUTS" type="usize">
+  Maximum number of outputs per transition (16)
+</ResponseField>
+
+<ResponseField name="MAX_IMPORTS" type="usize">
+  Maximum number of imports (64)
+</ResponseField>
+
+<ResponseField name="MAX_TRANSACTION_SIZE" type="[(ConsensusVersion, usize); 2]">
+  Maximum transaction size in bytes (128 kB → 768 kB)
+</ResponseField>
+
+### Associated Types
+
+<ResponseField name="StateRoot" type="type StateRoot: Bech32ID<Field<Self>>">
+  The state root type
+</ResponseField>
+
+<ResponseField name="BlockHash" type="type BlockHash: Bech32ID<Field<Self>>">
+  The block hash type
+</ResponseField>
+
+<ResponseField name="RatificationID" type="type RatificationID: Bech32ID<Field<Self>>">
+  The ratification ID type
+</ResponseField>
+
+<ResponseField name="TransactionID" type="type TransactionID: Bech32ID<Field<Self>>">
+  The transaction ID type
+</ResponseField>
+
+<ResponseField name="TransitionID" type="type TransitionID: Bech32ID<Field<Self>>">
+  The transition ID type
+</ResponseField>
+
+### Consensus Methods
+
+<ResponseField name="CONSENSUS_VERSION" type="fn CONSENSUS_VERSION(height: u32) -> Result<ConsensusVersion>">
+  Returns the consensus version active at the given height
+</ResponseField>
+
+<ResponseField name="CONSENSUS_HEIGHT" type="fn CONSENSUS_HEIGHT(version: ConsensusVersion) -> Result<u32>">
+  Returns the height at which a consensus version becomes active
+</ResponseField>
+
+<ResponseField name="INCLUSION_UPGRADE_HEIGHT" type="fn INCLUSION_UPGRADE_HEIGHT() -> Result<u32>">
+  Returns the block height where the inclusion proof will be updated
+</ResponseField>
+
+### Cryptographic Functions
+
+#### Commitment Functions
+
+<ResponseField name="commit_bhp256" type="fn commit_bhp256(input: &[bool], randomizer: &Scalar<Self>) -> Result<Field<Self>>">
+  BHP commitment with 256-bit input hasher
+</ResponseField>
+
+<ResponseField name="commit_bhp512" type="fn commit_bhp512(input: &[bool], randomizer: &Scalar<Self>) -> Result<Field<Self>>">
+  BHP commitment with 512-bit input hasher
+</ResponseField>
+
+<ResponseField name="commit_bhp768" type="fn commit_bhp768(input: &[bool], randomizer: &Scalar<Self>) -> Result<Field<Self>>">
+  BHP commitment with 768-bit input hasher
+</ResponseField>
+
+<ResponseField name="commit_bhp1024" type="fn commit_bhp1024(input: &[bool], randomizer: &Scalar<Self>) -> Result<Field<Self>>">
+  BHP commitment with 1024-bit input hasher
+</ResponseField>
+
+<ResponseField name="commit_ped64" type="fn commit_ped64(input: &[bool], randomizer: &Scalar<Self>) -> Result<Field<Self>>">
+  Pedersen commitment for up to 64-bit input
+</ResponseField>
+
+<ResponseField name="commit_ped128" type="fn commit_ped128(input: &[bool], randomizer: &Scalar<Self>) -> Result<Field<Self>>">
+  Pedersen commitment for up to 128-bit input
+</ResponseField>
+
+#### Hash Functions
+
+<ResponseField name="hash_bhp256" type="fn hash_bhp256(input: &[bool]) -> Result<Field<Self>>">
+  BHP hash with 256-bit input hasher
+</ResponseField>
+
+<ResponseField name="hash_bhp512" type="fn hash_bhp512(input: &[bool]) -> Result<Field<Self>>">
+  BHP hash with 512-bit input hasher
+</ResponseField>
+
+<ResponseField name="hash_bhp768" type="fn hash_bhp768(input: &[bool]) -> Result<Field<Self>>">
+  BHP hash with 768-bit input hasher
+</ResponseField>
+
+<ResponseField name="hash_bhp1024" type="fn hash_bhp1024(input: &[bool]) -> Result<Field<Self>>">
+  BHP hash with 1024-bit input hasher
+</ResponseField>
+
+<ResponseField name="hash_psd2" type="fn hash_psd2(input: &[Field<Self>]) -> Result<Field<Self>>">
+  Poseidon hash with input rate of 2
+</ResponseField>
+
+<ResponseField name="hash_psd4" type="fn hash_psd4(input: &[Field<Self>]) -> Result<Field<Self>>">
+  Poseidon hash with input rate of 4
+</ResponseField>
+
+<ResponseField name="hash_psd8" type="fn hash_psd8(input: &[Field<Self>]) -> Result<Field<Self>>">
+  Poseidon hash with input rate of 8
+</ResponseField>
+
+<ResponseField name="hash_keccak256" type="fn hash_keccak256(input: &[bool]) -> Result<Vec<bool>>">
+  Keccak hash with 256-bit output
+</ResponseField>
+
+<ResponseField name="hash_sha3_256" type="fn hash_sha3_256(input: &[bool]) -> Result<Vec<bool>>">
+  SHA-3 hash with 256-bit output
+</ResponseField>
+
+#### Hash to Group/Scalar
+
+<ResponseField name="hash_to_group_psd2" type="fn hash_to_group_psd2(input: &[Field<Self>]) -> Result<Group<Self>>">
+  Poseidon hash to group with input rate of 2
+</ResponseField>
+
+<ResponseField name="hash_to_group_psd4" type="fn hash_to_group_psd4(input: &[Field<Self>]) -> Result<Group<Self>>">
+  Poseidon hash to group with input rate of 4
+</ResponseField>
+
+<ResponseField name="hash_to_group_psd8" type="fn hash_to_group_psd8(input: &[Field<Self>]) -> Result<Group<Self>>">
+  Poseidon hash to group with input rate of 8
+</ResponseField>
+
+<ResponseField name="hash_to_scalar_psd2" type="fn hash_to_scalar_psd2(input: &[Field<Self>]) -> Result<Scalar<Self>>">
+  Poseidon hash to scalar with input rate of 2
+</ResponseField>
+
+<ResponseField name="hash_to_scalar_psd4" type="fn hash_to_scalar_psd4(input: &[Field<Self>]) -> Result<Scalar<Self>>">
+  Poseidon hash to scalar with input rate of 4
+</ResponseField>
+
+<ResponseField name="hash_to_scalar_psd8" type="fn hash_to_scalar_psd8(input: &[Field<Self>]) -> Result<Scalar<Self>>">
+  Poseidon hash to scalar with input rate of 8
+</ResponseField>
+
+#### Merkle Trees
+
+<ResponseField name="merkle_tree_bhp" type="fn merkle_tree_bhp<const DEPTH: u8>(leaves: &[Vec<bool>]) -> Result<BHPMerkleTree<Self, DEPTH>>">
+  Merkle tree with BHP leaf hasher (1024-bit) and path hasher (512-bit)
+</ResponseField>
+
+<ResponseField name="merkle_tree_psd" type="fn merkle_tree_psd<const DEPTH: u8>(leaves: &[Vec<Field<Self>>]) -> Result<PoseidonMerkleTree<Self, DEPTH>>">
+  Merkle tree with Poseidon leaf hasher (rate 4) and path hasher (rate 2)
+</ResponseField>
+
+<ResponseField name="verify_merkle_path_bhp" type="fn verify_merkle_path_bhp<const DEPTH: u8>(path: &MerklePath<Self, DEPTH>, root: &Field<Self>, leaf: &Vec<bool>) -> bool">
+  Verifies a BHP Merkle path
+</ResponseField>
+
+<ResponseField name="verify_merkle_path_psd" type="fn verify_merkle_path_psd<const DEPTH: u8>(path: &MerklePath<Self, DEPTH>, root: &Field<Self>, leaf: &Vec<Field<Self>>) -> bool">
+  Verifies a Poseidon Merkle path
+</ResponseField>
+
+### Domain Separators
+
+<ResponseField name="commitment_domain" type="fn commitment_domain() -> Field<Self>">
+  Returns the commitment domain constant
+</ResponseField>
+
+<ResponseField name="encryption_domain" type="fn encryption_domain() -> Field<Self>">
+  Returns the encryption domain constant
+</ResponseField>
+
+<ResponseField name="graph_key_domain" type="fn graph_key_domain() -> Field<Self>">
+  Returns the graph key domain constant
+</ResponseField>
+
+<ResponseField name="serial_number_domain" type="fn serial_number_domain() -> Field<Self>">
+  Returns the serial number domain constant
+</ResponseField>
+
+## MainnetV0
+
+The production Aleo network.
+
+### Example
+
+```rust
+use snarkvm_console::network::{MainnetV0, Network};
+
+type CurrentNetwork = MainnetV0;
+
+println!("Network ID: {}", CurrentNetwork::ID);
+println!("Network Name: {}", CurrentNetwork::NAME);
+println!("Block Time: {}s", CurrentNetwork::BLOCK_TIME);
+println!("Max Supply: {} credits", CurrentNetwork::MAX_SUPPLY);
+```
+
+### Configuration
+
+```rust
+// Network identity
+ID: 0
+NAME: "Mainnet"
+SHORT_NAME: "mainnet"
+
+// Genesis parameters
+GENESIS_TIMESTAMP: specific timestamp
+GENESIS_COINBASE_TARGET: specific target
+GENESIS_PROOF_TARGET: specific target
+```
+
+## TestnetV0
+
+The test network for development and testing.
+
+### Example
+
+```rust
+use snarkvm_console::network::{TestnetV0, Network};
+
+type CurrentNetwork = TestnetV0;
+
+// Use TestnetV0 for development
+let private_key = PrivateKey::<CurrentNetwork>::new(&mut rng)?;
+```
+
+### Configuration
+
+```rust
+// Network identity
+ID: 1
+NAME: "Testnet"
+SHORT_NAME: "testnet"
+
+// Same limits as mainnet but different genesis parameters
+```
+
+## CanaryV0
+
+The canary network for testing upgrades.
+
+### Example
+
+```rust
+use snarkvm_console::network::{CanaryV0, Network};
+
+type CurrentNetwork = CanaryV0;
+```
+
+### Configuration
+
+```rust
+// Network identity
+ID: 2
+NAME: "Canary"
+SHORT_NAME: "canary"
+```
+
+## Helper Types
+
+### BHPMerkleTree
+
+```rust
+pub type BHPMerkleTree<N, const DEPTH: u8> = 
+    MerkleTree<N, BHP1024<N>, BHP512<N>, DEPTH>;
+```
+
+Merkle tree using BHP hash functions.
+
+### PoseidonMerkleTree
+
+```rust
+pub type PoseidonMerkleTree<N, const DEPTH: u8> = 
+    MerkleTree<N, Poseidon4<N>, Poseidon2<N>, DEPTH>;
+```
+
+Merkle tree using Poseidon hash functions.
+
+## Consensus Versions
+
+Networks support multiple consensus versions:
+
+```rust
+pub enum ConsensusVersion {
+    V1,
+    V10,
+    V11,
+    V14,
+    // etc.
+}
+```
+
+### Querying Consensus
+
+```rust
+use snarkvm_console::network::{MainnetV0, Network, ConsensusVersion};
+
+type CurrentNetwork = MainnetV0;
+
+// Get consensus version at a specific height
+let version = CurrentNetwork::CONSENSUS_VERSION(1000)?;
+
+// Get height when a version activates
+let height = CurrentNetwork::CONSENSUS_HEIGHT(ConsensusVersion::V14)?;
+
+// Get latest max array elements
+let max_array = CurrentNetwork::LATEST_MAX_ARRAY_ELEMENTS();
+```
+
+## Using Network Parameters
+
+### Example: Fee Calculation
+
+```rust
+use snarkvm_console::network::{MainnetV0, Network};
+
+type CurrentNetwork = MainnetV0;
+
+// Calculate deployment fee
+let program_size = 50_000; // 50 kB
+let deployment_fee = program_size as u64 * CurrentNetwork::DEPLOYMENT_FEE_MULTIPLIER;
+println!("Deployment fee: {} microcredits", deployment_fee);
+
+// Check transaction size limit
+let tx_size = 100_000;
+assert!(tx_size <= CurrentNetwork::LATEST_MAX_TRANSACTION_SIZE());
+```
+
+### Example: Using Cryptographic Functions
+
+```rust
+use snarkvm_console::network::{MainnetV0, Network};
+use snarkvm_console::types::{Field, Scalar};
+
+type CurrentNetwork = MainnetV0;
+
+// Hash data
+let data = vec![true, false, true, true];
+let hash = CurrentNetwork::hash_bhp256(&data)?;
+
+// Commit with randomizer
+let randomizer = Scalar::<CurrentNetwork>::rand(&mut rng);
+let commitment = CurrentNetwork::commit_bhp512(&data, &randomizer)?;
+
+// Poseidon hash
+let fields = vec![Field::from_u64(1), Field::from_u64(2)];
+let hash = CurrentNetwork::hash_psd2(&fields)?;
+```
+
+### Example: Merkle Trees
+
+```rust
+use snarkvm_console::network::{MainnetV0, Network};
+
+type CurrentNetwork = MainnetV0;
+
+// Create BHP Merkle tree
+let leaves = vec![
+    vec![true, false, true],
+    vec![false, true, false],
+];
+let tree = CurrentNetwork::merkle_tree_bhp::<3>(&leaves)?;
+
+// Get root and proof
+let root = tree.root();
+let proof = tree.prove(0, &leaves[0])?;
+
+// Verify proof
+assert!(CurrentNetwork::verify_merkle_path_bhp(&proof, &root, &leaves[0]));
+```
+
+## See Also
+
+- [Console Overview](/api/console/overview) - Console module architecture
+- [Console Types](/api/console/types) - Primitive types used with networks
+- [Algorithms](/api/algorithms) - Cryptographic algorithm implementations

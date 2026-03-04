@@ -1,0 +1,639 @@
+---
+title: WebAssembly Integration
+description: Integrating SnarkVM with WebAssembly for browser and edge deployments
+---
+
+## Overview
+
+SnarkVM provides WebAssembly (WASM) bindings through the `snarkvm-wasm` crate, enabling zero-knowledge proof operations directly in web browsers, edge workers, and other WASM-compatible environments.
+
+## Features and Limitations
+
+### Supported Features
+
+The WASM build includes:
+
+- Account management (address generation, key management)
+- Cryptographic operations (hashing, signatures)
+- Block and transaction parsing
+- Field and group arithmetic
+- Program compilation and execution
+- Query operations for blockchain data
+
+### Limitations
+
+<Warning>
+  WASM builds have several important limitations:
+  - No CUDA acceleration support
+  - Limited proof generation (smaller constraint systems only)
+  - Single-threaded execution (no Rayon parallelism)
+  - Browser memory constraints (typically 2-4GB max)
+  - No native filesystem access
+</Warning>
+
+## Installation
+
+### Adding Dependency
+
+Add `snarkvm-wasm` to your `Cargo.toml`:
+
+```toml Cargo.toml
+[dependencies]
+snarkvm-wasm = { version = "4.4.0", features = ["full"] }
+wasm-bindgen = "0.2"
+```
+
+### Feature Flags
+
+The `snarkvm-wasm` crate supports granular feature flags:
+
+```toml Cargo.toml
+[dependencies.snarkvm-wasm]
+version = "4.4.0"
+features = [
+    "circuit",      # Circuit operations
+    "curves",       # Curve arithmetic
+    "fields",       # Field operations
+    "ledger",       # Block and transaction handling
+    "synthesizer",  # Program synthesis
+    "utilities",    # Helper utilities
+]
+```
+
+**Feature Details:**
+
+- `full` (default): Enables all features
+- `circuit`: Circuit-level operations and constraints
+- `curves`: Elliptic curve operations (BLS12-377)
+- `fields`: Finite field arithmetic
+- `ledger`: Blockchain query and data structures (`BlockStore`, `QueryTrait`)
+- `synthesizer`: Program compilation and execution
+- `utilities`: General-purpose utilities
+
+## Building for WASM
+
+### Prerequisites
+
+Install WASM toolchain:
+
+```bash
+# Install wasm-pack
+curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+# Add WASM target
+rustup target add wasm32-unknown-unknown
+
+# Install wasm-bindgen-cli (optional, for direct building)
+cargo install wasm-bindgen-cli
+```
+
+### Build Commands
+
+#### Using wasm-pack (Recommended)
+
+```bash
+# Development build (with debug info)
+wasm-pack build --target web --dev wasm/
+
+# Production build (optimized)
+wasm-pack build --target web --release wasm/
+
+# For Node.js
+wasm-pack build --target nodejs --release wasm/
+
+# For bundlers (webpack, rollup, etc.)
+wasm-pack build --target bundler --release wasm/
+```
+
+#### Using cargo
+
+```bash
+# Build WASM binary
+cargo build --target wasm32-unknown-unknown --release \
+    -p snarkvm-wasm --features full
+
+# Generate bindings
+wasm-bindgen target/wasm32-unknown-unknown/release/snarkvm_wasm.wasm \
+    --out-dir ./pkg --target web
+```
+
+### Optimization
+
+Optimize WASM binary size:
+
+```bash
+# Install wasm-opt (part of binaryen)
+# macOS
+brew install binaryen
+
+# Ubuntu/Debian
+sudo apt-get install binaryen
+
+# Optimize WASM
+wasm-opt -Oz -o output_optimized.wasm input.wasm
+
+# With wasm-pack
+wasm-pack build --target web --release -- \
+    --features full \
+    --config 'profile.release.opt-level="z"'
+```
+
+## Usage Examples
+
+### Browser Integration
+
+#### JavaScript/TypeScript
+
+```javascript
+import init, * as snarkvm from './pkg/snarkvm_wasm.js';
+
+// Initialize WASM module
+await init();
+
+// Use SnarkVM functions
+const account = snarkvm.create_account();
+console.log('Address:', account.address());
+console.log('Private key:', account.private_key());
+
+// Parse block data
+const blockData = '...';
+const block = snarkvm.parse_block(blockData);
+console.log('Block height:', block.height());
+console.log('Block hash:', block.hash());
+```
+
+#### HTML Example
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>SnarkVM WASM Example</title>
+</head>
+<body>
+    <h1>SnarkVM in Browser</h1>
+    <button id="createAccount">Create Account</button>
+    <div id="output"></div>
+
+    <script type="module">
+        import init, * as snarkvm from './pkg/snarkvm_wasm.js';
+
+        await init();
+
+        document.getElementById('createAccount').addEventListener('click', () => {
+            try {
+                const account = snarkvm.create_account();
+                document.getElementById('output').innerHTML = `
+                    <p><strong>Address:</strong> ${account.address()}</p>
+                    <p><strong>View Key:</strong> ${account.view_key()}</p>
+                `;
+            } catch (error) {
+                console.error('Error:', error);
+                document.getElementById('output').innerText = `Error: ${error.message}`;
+            }
+        });
+    </script>
+</body>
+</html>
+```
+
+### Node.js Integration
+
+```javascript
+const snarkvm = require('./pkg/snarkvm_wasm.js');
+
+// Node.js async initialization
+async function main() {
+    // Initialize WASM
+    await snarkvm.default();
+
+    // Query blockchain data
+    const client = snarkvm.create_client('https://api.explorer.aleo.org/v1');
+
+    try {
+        const latestHeight = await client.latest_height();
+        console.log('Latest block height:', latestHeight);
+
+        const latestBlock = await client.latest_block();
+        console.log('Latest block hash:', latestBlock.hash());
+    } catch (error) {
+        console.error('Query failed:', error);
+    }
+}
+
+main().catch(console.error);
+```
+
+### React Integration
+
+```typescript
+import React, { useState, useEffect } from 'react';
+import init, * as snarkvm from 'snarkvm-wasm';
+
+interface Account {
+    address: string;
+    privateKey: string;
+    viewKey: string;
+}
+
+const AleoWallet: React.FC = () => {
+    const [initialized, setInitialized] = useState(false);
+    const [account, setAccount] = useState<Account | null>(null);
+    const [loading, setLoading] = useState(false);
+
+    useEffect(() => {
+        // Initialize WASM module
+        init().then(() => {
+            console.log('SnarkVM WASM initialized');
+            setInitialized(true);
+        }).catch(error => {
+            console.error('Failed to initialize:', error);
+        });
+    }, []);
+
+    const createAccount = () => {
+        if (!initialized) return;
+
+        setLoading(true);
+        try {
+            const newAccount = snarkvm.create_account();
+            setAccount({
+                address: newAccount.address(),
+                privateKey: newAccount.private_key(),
+                viewKey: newAccount.view_key(),
+            });
+        } catch (error) {
+            console.error('Failed to create account:', error);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    if (!initialized) {
+        return <div>Loading SnarkVM...</div>;
+    }
+
+    return (
+        <div>
+            <h2>Aleo Wallet</h2>
+            <button onClick={createAccount} disabled={loading}>
+                {loading ? 'Creating...' : 'Create New Account'}
+            </button>
+
+            {account && (
+                <div>
+                    <p><strong>Address:</strong> {account.address}</p>
+                    <p><strong>View Key:</strong> {account.viewKey}</p>
+                </div>
+            )}
+        </div>
+    );
+};
+
+export default AleoWallet;
+```
+
+## Configuration
+
+### Cargo.toml Configuration
+
+The `snarkvm-wasm` crate configuration:
+
+```toml
+[package]
+name = "snarkvm-wasm"
+version = "4.4.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+snarkvm-console = { workspace = true, features = ["wasm"] }
+getrandom = { version = "0.2", features = ["js"] }
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3.37"
+```
+
+**Key Configuration Points:**
+
+- `crate-type = ["cdylib", "rlib"]`: Enables WASM compilation
+- `features = ["wasm"]`: Activates WASM-specific code paths
+- `getrandom` with `js` feature: Provides browser-compatible RNG
+
+### Random Number Generation
+
+SnarkVM uses `getrandom` with the `js` feature for cryptographically secure randomness in browsers:
+
+```rust
+use getrandom::getrandom;
+
+// Works in browser via Web Crypto API
+let mut random_bytes = [0u8; 32];
+getrandom(&mut random_bytes)?;
+```
+
+<Warning>
+  The `js` feature is required for `getrandom` to work in browsers. Without it, random number generation will panic.
+</Warning>
+
+## Testing WASM
+
+### Browser Tests
+
+Using `wasm-bindgen-test`:
+
+```rust
+use wasm_bindgen_test::*;
+
+wasm_bindgen_test_configure!(run_in_browser);
+
+#[wasm_bindgen_test]
+fn test_account_creation() {
+    let account = create_account();
+    assert!(account.address().len() > 0);
+}
+
+#[wasm_bindgen_test]
+fn test_field_arithmetic() {
+    let a = Field::from(5u64);
+    let b = Field::from(3u64);
+    let c = a + b;
+    assert_eq!(c, Field::from(8u64));
+}
+```
+
+### Running Tests
+
+```bash
+# Install wasm-bindgen-test-runner
+cargo install wasm-bindgen-cli
+
+# Run tests in Node.js
+wasm-pack test --node wasm/
+
+# Run tests in browser (requires Chrome/Firefox)
+wasm-pack test --headless --chrome wasm/
+wasm-pack test --headless --firefox wasm/
+
+# Run tests in all environments
+wasm-pack test --node --headless --chrome --firefox wasm/
+```
+
+## Performance Optimization
+
+### Build Optimization
+
+```toml Cargo.toml
+[profile.release]
+opt-level = "z"      # Optimize for size
+lto = true           # Link-time optimization
+codegen-units = 1    # Better optimization, slower compile
+panic = "abort"      # Smaller binary size
+```
+
+### Code Splitting
+
+Split large WASM modules:
+
+```javascript
+// Lazy load heavy operations
+const loadProver = () => import('./pkg/snarkvm_prover.js');
+const loadVerifier = () => import('./pkg/snarkvm_verifier.js');
+
+// Only load when needed
+button.addEventListener('click', async () => {
+    const prover = await loadProver();
+    const proof = await prover.generate_proof(input);
+});
+```
+
+### Worker Threads
+
+Offload computation to web workers:
+
+```javascript
+// main.js
+const worker = new Worker('snarkvm-worker.js');
+
+worker.postMessage({
+    type: 'generate_proof',
+    input: proofInput,
+});
+
+worker.onmessage = (event) => {
+    if (event.data.type === 'proof_complete') {
+        console.log('Proof:', event.data.proof);
+    }
+};
+
+// snarkvm-worker.js
+importScripts('./pkg/snarkvm_wasm.js');
+
+self.onmessage = async (event) => {
+    if (event.data.type === 'generate_proof') {
+        try {
+            await wasm_bindgen('./pkg/snarkvm_wasm_bg.wasm');
+            const proof = generate_proof(event.data.input);
+            self.postMessage({
+                type: 'proof_complete',
+                proof: proof,
+            });
+        } catch (error) {
+            self.postMessage({
+                type: 'error',
+                error: error.message,
+            });
+        }
+    }
+};
+```
+
+## Common Patterns
+
+### Error Handling
+
+```javascript
+try {
+    const result = snarkvm.risky_operation();
+    console.log('Success:', result);
+} catch (error) {
+    if (error instanceof WebAssembly.RuntimeError) {
+        console.error('WASM runtime error:', error.message);
+    } else {
+        console.error('Application error:', error);
+    }
+}
+```
+
+### Memory Management
+
+```javascript
+// Explicitly free resources
+const account = snarkvm.create_account();
+try {
+    // Use account
+    console.log(account.address());
+} finally {
+    // Free WASM memory
+    account.free();
+}
+
+// Or use automatic cleanup
+{
+    const account = snarkvm.create_account();
+    console.log(account.address());
+    // account.free() called automatically at scope end (if configured)
+}
+```
+
+### Async Operations
+
+```javascript
+// For long-running operations
+async function generateProofAsync(input) {
+    // Show loading indicator
+    showLoading();
+
+    try {
+        // Run in microtask to avoid blocking
+        await new Promise(resolve => setTimeout(resolve, 0));
+        const proof = snarkvm.generate_proof(input);
+        return proof;
+    } finally {
+        hideLoading();
+    }
+}
+```
+
+## Deployment
+
+### CDN Deployment
+
+```html
+<!-- Load from CDN -->
+<script type="module">
+    import init from 'https://cdn.example.com/snarkvm-wasm/pkg/snarkvm_wasm.js';
+    await init();
+    // Use SnarkVM
+</script>
+```
+
+### Webpack Configuration
+
+```javascript
+// webpack.config.js
+module.exports = {
+    experiments: {
+        asyncWebAssembly: true,
+    },
+    module: {
+        rules: [
+            {
+                test: /\.wasm$/,
+                type: 'webassembly/async',
+            },
+        ],
+    },
+};
+```
+
+### Vite Configuration
+
+```javascript
+// vite.config.js
+import { defineConfig } from 'vite';
+import wasm from 'vite-plugin-wasm';
+
+export default defineConfig({
+    plugins: [wasm()],
+    optimizeDeps: {
+        exclude: ['snarkvm-wasm'],
+    },
+});
+```
+
+## Troubleshooting
+
+### WASM Binary Too Large
+
+<Warning>
+  SnarkVM WASM can be 5-10MB uncompressed. Enable gzip compression on your server.
+</Warning>
+
+```nginx
+# nginx configuration
+gzip on;
+gzip_types application/wasm;
+gzip_comp_level 6;
+```
+
+### Memory Errors
+
+```javascript
+// Increase WASM memory limit
+const memory = new WebAssembly.Memory({
+    initial: 256,  // 16MB
+    maximum: 1024, // 64MB
+});
+```
+
+### Import Errors
+
+```javascript
+// Ensure correct initialization order
+import init from './pkg/snarkvm_wasm.js';
+
+// Must await init before using any functions
+await init();
+
+// Now safe to use
+const account = snarkvm.create_account();
+```
+
+## Best Practices
+
+### Development
+
+- Use development builds for debugging (include source maps)
+- Test in multiple browsers (Chrome, Firefox, Safari)
+- Monitor memory usage in DevTools
+- Use Web Workers for heavy computation
+
+### Production
+
+- Always use optimized release builds (`wasm-pack build --release`)
+- Enable gzip/brotli compression for WASM files
+- Implement proper error handling and recovery
+- Cache WASM modules using Service Workers
+- Consider code splitting for large applications
+
+### Security
+
+- Validate all inputs from untrusted sources
+- Use HTTPS for all WASM deployments
+- Implement Content Security Policy (CSP)
+- Keep dependencies updated
+
+## Browser Compatibility
+
+**Minimum Browser Versions:**
+
+- Chrome: 57+
+- Firefox: 52+
+- Safari: 11+
+- Edge: 16+
+
+**Required Features:**
+
+- WebAssembly MVP
+- WebAssembly BigInt integration (for u64 support)
+- Web Crypto API (for secure randomness)
+
+## Related Topics
+
+- [CUDA Acceleration](/advanced/cuda-acceleration) - Server-side performance optimization
+- [Storage Modes](/advanced/storage-modes) - Not applicable to WASM (no persistent storage)
+- [Custom Networks](/advanced/custom-networks) - Use custom networks in WASM environments

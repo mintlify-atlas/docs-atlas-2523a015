@@ -1,0 +1,631 @@
+---
+title: Serialization
+description: Canonical serialization traits and implementations
+---
+
+SnarkVM's serialization system provides canonical, deterministic serialization in little-endian format. This ensures that the same data always serializes to the same bytes, which is critical for cryptographic operations.
+
+## Core Traits
+
+The serialization system is built around four core traits:
+
+1. `CanonicalSerialize` - Serialize data to bytes
+2. `CanonicalDeserialize` - Deserialize data from bytes
+3. `CanonicalSerializeWithFlags` - Serialize with metadata flags
+4. `CanonicalDeserializeWithFlags` - Deserialize with metadata flags
+
+## CanonicalSerialize
+
+The primary trait for serializing data to bytes.
+
+```rust
+pub trait CanonicalSerialize {
+    fn serialize_with_mode<W: Write>(
+        &self,
+        writer: W,
+        compress: Compress
+    ) -> Result<(), SerializationError>;
+    
+    fn serialized_size(&self, compress: Compress) -> usize;
+    
+    // Convenience methods
+    fn serialize_compressed<W: Write>(&self, writer: W) 
+        -> Result<(), SerializationError>;
+    fn compressed_size(&self) -> usize;
+    fn serialize_uncompressed<W: Write>(&self, writer: W) 
+        -> Result<(), SerializationError>;
+    fn uncompressed_size(&self) -> usize;
+}
+```
+
+### Compression Modes
+
+The `Compress` enum controls whether data is compressed:
+
+```rust
+pub enum Compress {
+    Yes,
+    No,
+}
+```
+
+**Compressed mode:**
+- Elliptic curve points: Only x-coordinate + sign bit
+- Field elements: Minimal byte representation
+- Smaller serialized size, slightly slower
+
+**Uncompressed mode:**
+- Elliptic curve points: Both x and y coordinates
+- Field elements: Full byte representation
+- Larger serialized size, slightly faster
+
+### Basic Usage
+
+```rust
+use snarkvm_utilities::serialize::*;
+
+// Serialize with compression
+let mut buffer = Vec::new();
+value.serialize_compressed(&mut buffer)?;
+
+println!("Compressed size: {} bytes", buffer.len());
+
+// Serialize without compression
+let mut buffer = Vec::new();
+value.serialize_uncompressed(&mut buffer)?;
+
+println!("Uncompressed size: {} bytes", buffer.len());
+
+// Get size without serializing
+let size = value.compressed_size();
+println!("Will be {} bytes when compressed", size);
+```
+
+### Custom Compression Control
+
+```rust
+use snarkvm_utilities::serialize::{Compress, CanonicalSerialize};
+
+let compress = if optimize_for_size {
+    Compress::Yes
+} else {
+    Compress::No
+};
+
+value.serialize_with_mode(&mut buffer, compress)?;
+```
+
+## CanonicalDeserialize
+
+The primary trait for deserializing data from bytes.
+
+```rust
+pub trait CanonicalDeserialize: Valid {
+    fn deserialize_with_mode<R: Read>(
+        reader: R,
+        compress: Compress,
+        validate: Validate,
+    ) -> Result<Self, SerializationError>;
+    
+    // Convenience methods
+    fn deserialize_compressed<R: Read>(reader: R) 
+        -> Result<Self, SerializationError>;
+    fn deserialize_compressed_unchecked<R: Read>(reader: R) 
+        -> Result<Self, SerializationError>;
+    fn deserialize_uncompressed<R: Read>(reader: R) 
+        -> Result<Self, SerializationError>;
+    fn deserialize_uncompressed_unchecked<R: Read>(reader: R) 
+        -> Result<Self, SerializationError>;
+}
+```
+
+### Validation Modes
+
+The `Validate` enum controls whether deserialized data is validated:
+
+```rust
+pub enum Validate {
+    Yes,
+    No,
+}
+```
+
+**Validated mode:**
+- Checks mathematical constraints (e.g., point on curve)
+- Checks range constraints (e.g., field element in range)
+- Slower but safer
+- Use for untrusted data
+
+**Unchecked mode:**
+- Skips validation
+- Faster but potentially unsafe
+- Use only for trusted data
+
+### Basic Usage
+
+```rust
+use snarkvm_utilities::serialize::*;
+
+// Deserialize with validation (safe for untrusted data)
+let value: MyType = CanonicalDeserialize::deserialize_compressed(&bytes[..])?;
+
+// Deserialize without validation (trusted data only)
+let value: MyType = CanonicalDeserialize::deserialize_compressed_unchecked(&bytes[..])?;
+
+// Uncompressed deserialization
+let value: MyType = CanonicalDeserialize::deserialize_uncompressed(&bytes[..])?;
+```
+
+### Custom Validation Control
+
+```rust
+use snarkvm_utilities::serialize::{Compress, Validate, CanonicalDeserialize};
+
+let validate = if trusted_source {
+    Validate::No  // Skip validation for speed
+} else {
+    Validate::Yes // Validate untrusted data
+};
+
+let value = MyType::deserialize_with_mode(
+    &bytes[..],
+    Compress::Yes,
+    validate,
+)?;
+```
+
+## Valid Trait
+
+Types that implement `CanonicalDeserialize` must also implement `Valid`:
+
+```rust
+pub trait Valid: Sized + Sync {
+    fn check(&self) -> Result<(), SerializationError>;
+    
+    fn batch_check<'a>(
+        batch: impl Iterator<Item = &'a Self> + Send
+    ) -> Result<(), SerializationError>
+    where
+        Self: 'a;
+}
+```
+
+### Implementing Valid
+
+```rust
+use snarkvm_utilities::serialize::{Valid, SerializationError};
+
+impl Valid for MyType {
+    fn check(&self) -> Result<(), SerializationError> {
+        // Validate internal consistency
+        if self.value > MAX_VALUE {
+            return Err(SerializationError::InvalidData);
+        }
+        Ok(())
+    }
+}
+```
+
+### Batch Validation
+
+The `batch_check` method validates multiple items, potentially in parallel:
+
+```rust
+use snarkvm_utilities::serialize::Valid;
+
+let items = vec![item1, item2, item3];
+MyType::batch_check(items.iter())?;
+```
+
+With the `parallel` feature enabled, this uses multiple threads for validation.
+
+## Flags
+
+Flags allow encoding metadata in the serialization.
+
+```rust
+pub trait Flags: Default + Clone + Copy + Sized {
+    const BIT_SIZE: usize;
+    
+    fn u8_bitmask(&self) -> u8;
+    fn from_u8(value: u8) -> Option<Self>;
+    fn from_u8_remove_flags(value: &mut u8) -> Option<Self>;
+}
+```
+
+### Use Case: Elliptic Curves
+
+Elliptic curve points use flags to encode the y-coordinate sign:
+
+```rust
+#[derive(Copy, Clone)]
+enum PointFlags {
+    Infinity,
+    YPositive,
+    YNegative,
+}
+
+impl Flags for PointFlags {
+    const BIT_SIZE: usize = 2;
+    
+    fn u8_bitmask(&self) -> u8 {
+        match self {
+            Self::Infinity => 0b11000000,
+            Self::YPositive => 0b10000000,
+            Self::YNegative => 0b01000000,
+        }
+    }
+    
+    fn from_u8(value: u8) -> Option<Self> {
+        match value & 0b11000000 {
+            0b11000000 => Some(Self::Infinity),
+            0b10000000 => Some(Self::YPositive),
+            0b01000000 => Some(Self::YNegative),
+            _ => None,
+        }
+    }
+}
+```
+
+## CanonicalSerializeWithFlags
+
+Serialize data along with metadata flags.
+
+```rust
+pub trait CanonicalSerializeWithFlags: CanonicalSerialize {
+    fn serialize_with_flags<W: Write, F: Flags>(
+        &self,
+        writer: W,
+        flags: F
+    ) -> Result<(), SerializationError>;
+    
+    fn serialized_size_with_flags<F: Flags>(&self) -> usize;
+}
+```
+
+### Example: Serializing with Flags
+
+```rust
+use snarkvm_utilities::serialize::*;
+
+// Define flags
+#[derive(Default, Copy, Clone)]
+enum MyFlags {
+    #[default]
+    None = 0,
+    SpecialCase = 1,
+}
+
+impl Flags for MyFlags {
+    const BIT_SIZE: usize = 1;
+    
+    fn u8_bitmask(&self) -> u8 {
+        (*self as u8) << 7
+    }
+    
+    fn from_u8(value: u8) -> Option<Self> {
+        match (value >> 7) & 1 {
+            0 => Some(Self::None),
+            1 => Some(Self::SpecialCase),
+            _ => None,
+        }
+    }
+}
+
+// Serialize with flags
+let flags = MyFlags::SpecialCase;
+value.serialize_with_flags(&mut buffer, flags)?;
+```
+
+## CanonicalDeserializeWithFlags
+
+Deserialize data along with metadata flags.
+
+```rust
+pub trait CanonicalDeserializeWithFlags: Sized {
+    fn deserialize_with_flags<R: Read, F: Flags>(
+        reader: R
+    ) -> Result<(Self, F), SerializationError>;
+}
+```
+
+### Example: Deserializing with Flags
+
+```rust
+use snarkvm_utilities::serialize::*;
+
+let (value, flags): (MyType, MyFlags) = 
+    CanonicalDeserializeWithFlags::deserialize_with_flags(&bytes[..])?;
+
+match flags {
+    MyFlags::None => println!("Regular value"),
+    MyFlags::SpecialCase => println!("Special case value"),
+}
+```
+
+## Derive Macros
+
+When the `derive` feature is enabled, you can automatically derive serialization traits:
+
+```rust
+use snarkvm_utilities::serialize::*;
+
+#[derive(CanonicalSerialize, CanonicalDeserialize)]
+struct MyStruct {
+    a: u64,
+    b: Vec<u8>,
+    c: String,
+}
+
+// Now MyStruct implements serialization traits
+let mut bytes = Vec::new();
+my_struct.serialize_compressed(&mut bytes)?;
+
+let deserialized: MyStruct = 
+    CanonicalDeserialize::deserialize_compressed(&bytes[..])?;
+```
+
+### Requirements for Derive
+
+All fields must implement the relevant traits:
+
+```rust
+#[derive(CanonicalSerialize, CanonicalDeserialize)]
+struct Container<T: CanonicalSerialize + CanonicalDeserialize> {
+    items: Vec<T>,
+}
+```
+
+## Standard Type Implementations
+
+Many standard types implement the serialization traits:
+
+### Primitive Types
+
+```rust
+// Integers: u8, u16, u32, u64, u128, i8, i16, i32, i64, i128
+let value: u64 = 12345;
+value.serialize_compressed(&mut buffer)?;
+
+// Bool
+let value = true;
+value.serialize_compressed(&mut buffer)?;
+```
+
+### Collections
+
+```rust
+// Vec<T> where T: CanonicalSerialize
+let vec = vec![1u64, 2, 3, 4, 5];
+vec.serialize_compressed(&mut buffer)?;
+
+// [T; N] where T: CanonicalSerialize
+let array = [1u32, 2, 3, 4];
+array.serialize_compressed(&mut buffer)?;
+
+// Option<T> where T: CanonicalSerialize
+let opt: Option<u64> = Some(42);
+opt.serialize_compressed(&mut buffer)?;
+```
+
+### Tuples
+
+```rust
+// Up to 4-tuples
+let tuple = (1u32, "hello", vec![1, 2, 3]);
+tuple.serialize_compressed(&mut buffer)?;
+```
+
+## Utility Functions
+
+The serialization module provides utility functions:
+
+### Bit/Byte Calculations
+
+```rust
+use snarkvm_utilities::serialize::*;
+
+// Calculate byte-aligned size for bit count
+let (bits, bytes) = number_of_bits_and_bytes(251);
+assert_eq!(bits, 256);  // Rounded up to byte boundary
+assert_eq!(bytes, 32);  // 32 bytes needed
+
+// Direct byte calculation
+let bytes = number_of_bits_to_number_of_bytes(999);
+assert_eq!(bytes, 125); // 999 bits = 125 bytes
+```
+
+## SerializationError
+
+The error type for serialization operations:
+
+```rust
+pub enum SerializationError {
+    /// Invalid data encountered
+    InvalidData,
+    /// I/O error
+    IoError(std::io::Error),
+    /// Not enough data available
+    NotEnoughSpace,
+    /// Unexpected data encountered
+    UnexpectedFlags,
+}
+```
+
+### Error Handling
+
+```rust
+use snarkvm_utilities::serialize::SerializationError;
+
+fn my_serialize(data: &Data) -> Result<Vec<u8>, SerializationError> {
+    let mut buffer = Vec::new();
+    
+    match data.serialize_compressed(&mut buffer) {
+        Ok(_) => Ok(buffer),
+        Err(SerializationError::InvalidData) => {
+            // Handle invalid data
+            Err(SerializationError::InvalidData)
+        }
+        Err(e) => Err(e),
+    }
+}
+```
+
+## Best Practices
+
+### 1. Choose the Right Compression Mode
+
+```rust
+// Network transmission: use compression
+value.serialize_compressed(&mut network_buffer)?;
+
+// Disk storage with fast access: consider uncompressed
+value.serialize_uncompressed(&mut file)?;
+
+// Memory caching: use uncompressed for speed
+value.serialize_uncompressed(&mut cache)?;
+```
+
+### 2. Validate Untrusted Data
+
+```rust
+// From network or user input: validate
+let value: MyType = CanonicalDeserialize::deserialize_compressed(&untrusted_bytes)?;
+
+// From trusted source (e.g., your own database): skip validation
+let value: MyType = CanonicalDeserialize::deserialize_compressed_unchecked(&trusted_bytes)?;
+```
+
+### 3. Use Batch Validation
+
+```rust
+// Deserialize all items first
+let items: Vec<MyType> = bytes_list
+    .into_iter()
+    .map(|bytes| MyType::deserialize_compressed_unchecked(&bytes))
+    .collect::<Result<Vec<_>, _>>()?;
+
+// Validate in batch (potentially parallel)
+MyType::batch_check(items.iter())?;
+```
+
+### 4. Pre-calculate Sizes
+
+```rust
+// Pre-allocate buffer to avoid reallocations
+let size = value.compressed_size();
+let mut buffer = Vec::with_capacity(size);
+value.serialize_compressed(&mut buffer)?;
+
+assert_eq!(buffer.len(), size);
+```
+
+### 5. Use Derive When Possible
+
+```rust
+// Let the derive macro generate correct implementations
+#[derive(CanonicalSerialize, CanonicalDeserialize)]
+struct MyType {
+    field1: u64,
+    field2: Vec<u8>,
+}
+```
+
+## Performance Considerations
+
+### Compression Trade-offs
+
+**Compressed:**
+- ✓ Smaller size (30-50% reduction for curve points)
+- ✓ Better for network transmission
+- ✗ Slower (needs point decompression)
+
+**Uncompressed:**
+- ✓ Faster serialization/deserialization
+- ✓ Better for in-memory operations
+- ✗ Larger size
+
+### Validation Trade-offs
+
+**Validated:**
+- ✓ Safe for untrusted input
+- ✓ Catches malformed data
+- ✗ Slower (checks mathematical constraints)
+
+**Unchecked:**
+- ✓ Faster deserialization
+- ✓ Good for trusted data
+- ✗ Unsafe with untrusted input
+
+### Batching
+
+Batch operations are more efficient:
+
+```rust
+// Bad: Serialize individually
+for item in items {
+    item.serialize_compressed(&mut individual_buffer)?;
+}
+
+// Good: Serialize as collection
+items.serialize_compressed(&mut batch_buffer)?;
+```
+
+## Example: Complete Serialization Workflow
+
+```rust
+use snarkvm_utilities::serialize::*;
+
+#[derive(CanonicalSerialize, CanonicalDeserialize)]
+struct Transaction {
+    id: u64,
+    sender: Vec<u8>,
+    receiver: Vec<u8>,
+    amount: u64,
+}
+
+impl Valid for Transaction {
+    fn check(&self) -> Result<(), SerializationError> {
+        if self.sender.len() != 32 {
+            return Err(SerializationError::InvalidData);
+        }
+        if self.receiver.len() != 32 {
+            return Err(SerializationError::InvalidData);
+        }
+        Ok(())
+    }
+}
+
+// Create transaction
+let tx = Transaction {
+    id: 1,
+    sender: vec![0u8; 32],
+    receiver: vec![1u8; 32],
+    amount: 1000,
+};
+
+// Serialize for network transmission (compressed)
+let mut network_bytes = Vec::new();
+tx.serialize_compressed(&mut network_bytes)?;
+
+// Send over network...
+
+// Deserialize (validate untrusted data)
+let received_tx: Transaction = 
+    CanonicalDeserialize::deserialize_compressed(&network_bytes)?;
+
+// Store to disk (uncompressed for speed)
+let mut disk_bytes = Vec::new();
+received_tx.serialize_uncompressed(&mut disk_bytes)?;
+
+// Read from disk (trusted, no validation needed)
+let stored_tx: Transaction = 
+    CanonicalDeserialize::deserialize_uncompressed_unchecked(&disk_bytes)?;
+
+assert_eq!(stored_tx.id, tx.id);
+```
+
+## Next Steps
+
+- [Utilities Overview](/api/utilities/overview) - Overview of all utility modules
+- [Parallel Execution](/api/utilities/parallel) - Parallel processing utilities

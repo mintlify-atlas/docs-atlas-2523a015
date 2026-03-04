@@ -1,0 +1,693 @@
+---
+title: 'FFT Implementations'
+description: 'Fast Fourier Transform for efficient polynomial arithmetic over finite fields'
+---
+
+## Overview
+
+The `fft` module implements Fast Fourier Transform operations for polynomial arithmetic over finite fields. These operations are fundamental to zkSNARK construction, enabling O(n log n) polynomial evaluation and interpolation.
+
+## EvaluationDomain
+
+### Overview
+
+Represents a multiplicative subgroup of a finite field for FFT operations.
+
+```rust
+pub struct EvaluationDomain<F: FftField> {
+    pub size: u64,
+    pub log_size_of_group: u32,
+    pub size_as_field_element: F,
+    pub size_inv: F,
+    pub group_gen: F,
+    pub group_gen_inv: F,
+    pub generator_inv: F,
+}
+```
+
+<ParamField path="size" type="u64">
+  Size of the domain (must be a power of 2)
+</ParamField>
+
+<ParamField path="group_gen" type="F">
+  Generator of the multiplicative subgroup
+</ParamField>
+
+<ParamField path="size_inv" type="F">
+  Multiplicative inverse of the size
+</ParamField>
+
+### Construction
+
+#### new
+
+Creates a new evaluation domain.
+
+```rust
+pub fn new(num_coeffs: usize) -> Result<Self>
+```
+
+<ParamField path="num_coeffs" type="usize">
+  Number of coefficients (will be rounded up to next power of 2)
+</ParamField>
+
+<ResponseField name="return" type="Result<EvaluationDomain<F>>">
+  Evaluation domain of size that is the smallest power of 2 >= num_coeffs
+</ResponseField>
+
+**Example:**
+
+```rust
+use snarkvm_algorithms::fft::EvaluationDomain;
+use snarkvm_curves::bls12_377::Fr;
+
+// Creates domain of size 256 (next power of 2 after 200)
+let domain = EvaluationDomain::<Fr>::new(200)?;
+assert_eq!(domain.size(), 256);
+```
+
+### FFT Operations
+
+#### fft
+
+Performs forward FFT on polynomial coefficients.
+
+```rust
+pub fn fft<T: DomainCoeff<F>>(&self, coeffs: &[T]) -> Vec<T>
+```
+
+<ParamField path="coeffs" type="&[T]">
+  Polynomial coefficients in monomial basis
+</ParamField>
+
+<ResponseField name="return" type="Vec<T>">
+  Evaluations over the domain
+</ResponseField>
+
+**Example:**
+
+```rust
+use snarkvm_algorithms::fft::DensePolynomial;
+
+let polynomial = DensePolynomial::from_coefficients_vec(
+    vec![Fr::from(1u64), Fr::from(2u64), Fr::from(3u64)]
+);
+
+let domain = EvaluationDomain::new(polynomial.coeffs.len())?;
+let evaluations = domain.fft(&polynomial.coeffs);
+```
+
+#### ifft
+
+Performs inverse FFT (interpolation).
+
+```rust
+pub fn ifft<T: DomainCoeff<F>>(&self, evals: &[T]) -> Vec<T>
+```
+
+<ParamField path="evals" type="&[T]">
+  Evaluations over the domain
+</ParamField>
+
+<ResponseField name="return" type="Vec<T>">
+  Polynomial coefficients in monomial basis
+</ResponseField>
+
+**Example:**
+
+```rust
+// Interpolate from evaluations
+let coeffs = domain.ifft(&evaluations);
+assert_eq!(coeffs, polynomial.coeffs);
+```
+
+#### fft_in_place
+
+In-place FFT that modifies the input vector.
+
+```rust
+pub fn fft_in_place<T: DomainCoeff<F>>(&self, coeffs: &mut Vec<T>)
+```
+
+<ParamField path="coeffs" type="&mut Vec<T>">
+  Polynomial coefficients (will be replaced with evaluations)
+</ParamField>
+
+**Example:**
+
+```rust
+let mut data = polynomial.coeffs.clone();
+domain.fft_in_place(&mut data);
+// data now contains evaluations
+```
+
+#### ifft_in_place
+
+In-place inverse FFT.
+
+```rust
+pub fn ifft_in_place<T: DomainCoeff<F>>(&self, evals: &mut Vec<T>)
+```
+
+### Coset Operations
+
+#### coset_fft
+
+Performs FFT over a coset of the domain.
+
+```rust
+pub fn coset_fft<T: DomainCoeff<F>>(&self, coeffs: &[T]) -> Vec<T>
+```
+
+<ParamField path="coeffs" type="&[T]">
+  Polynomial coefficients
+</ParamField>
+
+<ResponseField name="return" type="Vec<T>">
+  Evaluations over coset g * domain
+</ResponseField>
+
+**Example:**
+
+```rust
+// Evaluate over a coset (shifted domain)
+let coset_evals = domain.coset_fft(&polynomial.coeffs);
+```
+
+#### coset_ifft
+
+Interpolates from coset evaluations.
+
+```rust
+pub fn coset_ifft<T: DomainCoeff<F>>(&self, evals: &[T]) -> Vec<T>
+```
+
+### Domain Queries
+
+#### size
+
+Returns the size of the domain.
+
+```rust
+pub fn size(&self) -> usize
+```
+
+<ResponseField name="return" type="usize">
+  Size of the evaluation domain
+</ResponseField>
+
+#### elements
+
+Returns all elements of the domain.
+
+```rust
+pub fn elements(&self) -> Vec<F>
+```
+
+<ResponseField name="return" type="Vec<F>">
+  All elements in the domain (powers of the generator)
+</ResponseField>
+
+**Example:**
+
+```rust
+let domain = EvaluationDomain::<Fr>::new(8)?;
+let elements = domain.elements();
+assert_eq!(elements.len(), 8);
+// elements = [1, ω, ω², ω³, ω⁴, ω⁵, ω⁶, ω⁷] where ω is the generator
+```
+
+#### evaluate_vanishing_polynomial
+
+Evaluates the vanishing polynomial Z_H(x) = x^n - 1.
+
+```rust
+pub fn evaluate_vanishing_polynomial(&self, x: F) -> F
+```
+
+<ParamField path="x" type="F">
+  Point to evaluate at
+</ParamField>
+
+<ResponseField name="return" type="F">
+  Value of vanishing polynomial at x
+</ResponseField>
+
+**Example:**
+
+```rust
+let domain = EvaluationDomain::<Fr>::new(8)?;
+let point = Fr::from(5u64);
+let vanishing = domain.evaluate_vanishing_polynomial(point);
+// vanishing = point^8 - 1
+```
+
+## DensePolynomial
+
+### Overview
+
+Polynomial stored in coefficient form.
+
+```rust
+pub struct DensePolynomial<F: Field> {
+    pub coeffs: Vec<F>,
+}
+```
+
+<ParamField path="coeffs" type="Vec<F>">
+  Coefficients in ascending degree order (coeffs[i] is coefficient of x^i)
+</ParamField>
+
+### Construction
+
+#### from_coefficients_vec
+
+Creates polynomial from coefficient vector.
+
+```rust
+pub fn from_coefficients_vec(coeffs: Vec<F>) -> Self
+```
+
+<ParamField path="coeffs" type="Vec<F>">
+  Polynomial coefficients
+</ParamField>
+
+<ResponseField name="return" type="DensePolynomial<F>">
+  Polynomial with given coefficients (trailing zeros removed)
+</ResponseField>
+
+**Example:**
+
+```rust
+use snarkvm_algorithms::fft::DensePolynomial;
+
+// p(x) = 1 + 2x + 3x²
+let poly = DensePolynomial::from_coefficients_vec(
+    vec![Fr::from(1u64), Fr::from(2u64), Fr::from(3u64)]
+);
+```
+
+#### zero
+
+Creates the zero polynomial.
+
+```rust
+pub fn zero() -> Self
+```
+
+<ResponseField name="return" type="DensePolynomial<F>">
+  The zero polynomial
+</ResponseField>
+
+#### rand
+
+Generates a random polynomial.
+
+```rust
+pub fn rand<R: Rng>(degree: usize, rng: &mut R) -> Self
+```
+
+<ParamField path="degree" type="usize">
+  Degree of the polynomial
+</ParamField>
+
+<ParamField path="rng" type="&mut R">
+  Random number generator
+</ParamField>
+
+<ResponseField name="return" type="DensePolynomial<F>">
+  Random polynomial of specified degree
+</ResponseField>
+
+**Example:**
+
+```rust
+use snarkvm_utilities::rand::TestRng;
+
+let mut rng = TestRng::default();
+let poly = DensePolynomial::rand(100, &mut rng);
+assert_eq!(poly.degree(), 100);
+```
+
+### Polynomial Operations
+
+#### degree
+
+Returns the degree of the polynomial.
+
+```rust
+pub fn degree(&self) -> usize
+```
+
+<ResponseField name="return" type="usize">
+  Degree of the polynomial (0 for zero polynomial)
+</ResponseField>
+
+#### evaluate
+
+Evaluates the polynomial at a point.
+
+```rust
+pub fn evaluate(&self, point: F) -> F
+```
+
+<ParamField path="point" type="F">
+  Point to evaluate at
+</ParamField>
+
+<ResponseField name="return" type="F">
+  Value of polynomial at point (using Horner's method)
+</ResponseField>
+
+**Example:**
+
+```rust
+let point = Fr::from(5u64);
+let value = poly.evaluate(point);
+// For p(x) = 1 + 2x + 3x², p(5) = 1 + 10 + 75 = 86
+```
+
+#### divide_by_vanishing_poly
+
+Divides by the vanishing polynomial of a domain.
+
+```rust
+pub fn divide_by_vanishing_poly(&self, domain: &EvaluationDomain<F>) -> Result<DensePolynomial<F>>
+```
+
+<ParamField path="domain" type="&EvaluationDomain<F>">
+  The evaluation domain
+</ParamField>
+
+<ResponseField name="return" type="Result<DensePolynomial<F>>">
+  Quotient polynomial p(x) / (x^n - 1)
+</ResponseField>
+
+**Example:**
+
+```rust
+let domain = EvaluationDomain::new(8)?;
+let quotient = polynomial.divide_by_vanishing_poly(&domain)?;
+```
+
+### Arithmetic Operations
+
+DensePolynomial implements standard arithmetic:
+
+```rust
+// Addition
+let sum = &poly1 + &poly2;
+
+// Subtraction
+let diff = &poly1 - &poly2;
+
+// Multiplication
+let product = &poly1 * &poly2;
+
+// Division
+let quotient = &poly1 / &poly2;
+
+// Scalar multiplication
+let scaled = &poly * scalar;
+```
+
+## SparsePolynomial
+
+### Overview
+
+Polynomial with few non-zero coefficients.
+
+```rust
+pub struct SparsePolynomial<F: Field> {
+    coeffs: Vec<(usize, F)>,  // (degree, coefficient) pairs
+}
+```
+
+### Construction
+
+#### from_coefficients_vec
+
+Creates sparse polynomial from (degree, coefficient) pairs.
+
+```rust
+pub fn from_coefficients_vec(coeffs: Vec<(usize, F)>) -> Self
+```
+
+<ParamField path="coeffs" type="Vec<(usize, F)>">
+  Vector of (degree, coefficient) pairs
+</ParamField>
+
+<ResponseField name="return" type="SparsePolynomial<F>">
+  Sparse polynomial
+</ResponseField>
+
+**Example:**
+
+```rust
+use snarkvm_algorithms::fft::SparsePolynomial;
+
+// p(x) = 3x^5 + 7x^100
+let sparse = SparsePolynomial::from_coefficients_vec(vec![
+    (5, Fr::from(3u64)),
+    (100, Fr::from(7u64)),
+]);
+```
+
+### Methods
+
+#### degree
+
+Returns the degree.
+
+```rust
+pub fn degree(&self) -> usize
+```
+
+#### evaluate
+
+Evaluates at a point.
+
+```rust
+pub fn evaluate(&self, point: F) -> F
+```
+
+## Evaluations
+
+### Overview
+
+Polynomial represented in evaluation form (Lagrange basis).
+
+```rust
+pub struct Evaluations<F: FftField> {
+    pub evaluations: Vec<F>,
+    pub domain: EvaluationDomain<F>,
+}
+```
+
+<ParamField path="evaluations" type="Vec<F>">
+  Polynomial evaluations over the domain
+</ParamField>
+
+<ParamField path="domain" type="EvaluationDomain<F>">
+  The evaluation domain
+</ParamField>
+
+### Construction
+
+#### from_vec_and_domain
+
+Creates Evaluations from vector and domain.
+
+```rust
+pub fn from_vec_and_domain(evaluations: Vec<F>, domain: EvaluationDomain<F>) -> Self
+```
+
+<ParamField path="evaluations" type="Vec<F>">
+  Evaluation values
+</ParamField>
+
+<ParamField path="domain" type="EvaluationDomain<F>">
+  Evaluation domain
+</ParamField>
+
+<ResponseField name="return" type="Evaluations<F>">
+  Polynomial in evaluation form
+</ResponseField>
+
+**Example:**
+
+```rust
+use snarkvm_algorithms::fft::Evaluations;
+
+let domain = EvaluationDomain::new(8)?;
+let evals = Evaluations::from_vec_and_domain(
+    vec![Fr::from(1u64); 8],
+    domain,
+);
+```
+
+### Methods
+
+#### interpolate
+
+Converts to coefficient form.
+
+```rust
+pub fn interpolate(&self) -> DensePolynomial<F>
+```
+
+<ResponseField name="return" type="DensePolynomial<F>">
+  Polynomial in coefficient form
+</ResponseField>
+
+**Example:**
+
+```rust
+let polynomial = evals.interpolate();
+```
+
+#### interpolate_by_ref
+
+Interpolates without consuming.
+
+```rust
+pub fn interpolate_by_ref(&self) -> DensePolynomial<F>
+```
+
+## DomainCoeff Trait
+
+Defines types that can be FFT-transformed.
+
+```rust
+pub trait DomainCoeff<F: FftField>:
+    Copy + Send + Sync
+    + Add<Output = Self>
+    + Sub<Output = Self>
+    + AddAssign
+    + SubAssign
+    + Zero
+    + MulAssign<F>
+{}
+```
+
+Automatically implemented for field elements and extension fields.
+
+## Polynomial Trait
+
+Common interface for polynomial types.
+
+```rust
+pub enum Polynomial<'a, F: Field> {
+    Dense(&'a DensePolynomial<F>),
+    Sparse(&'a SparsePolynomial<F>),
+}
+```
+
+## Complete Example
+
+```rust
+use snarkvm_algorithms::fft::{
+    DensePolynomial,
+    EvaluationDomain,
+    Evaluations,
+};
+use snarkvm_curves::bls12_377::Fr;
+
+fn main() -> Result<()> {
+    // Create a polynomial p(x) = 1 + 2x + 3x²
+    let poly = DensePolynomial::from_coefficients_vec(vec![
+        Fr::from(1u64),
+        Fr::from(2u64),
+        Fr::from(3u64),
+    ]);
+    
+    // Create evaluation domain
+    let domain = EvaluationDomain::new(poly.coeffs.len())?;
+    println!("Domain size: {}", domain.size());
+    
+    // Forward FFT: coefficients -> evaluations
+    let evaluations = domain.fft(&poly.coeffs);
+    println!("Evaluations: {} elements", evaluations.len());
+    
+    // Verify: evaluate manually at domain points
+    let domain_elements = domain.elements();
+    for (i, &element) in domain_elements.iter().enumerate() {
+        let manual_eval = poly.evaluate(element);
+        assert_eq!(evaluations[i], manual_eval);
+    }
+    
+    // Inverse FFT: evaluations -> coefficients
+    let recovered = domain.ifft(&evaluations);
+    assert_eq!(recovered, poly.coeffs);
+    
+    // Work with Evaluations wrapper
+    let evals = Evaluations::from_vec_and_domain(evaluations, domain);
+    let recovered_poly = evals.interpolate();
+    assert_eq!(recovered_poly, poly);
+    
+    // Coset FFT for non-domain points
+    let coset_evals = domain.coset_fft(&poly.coeffs);
+    let recovered_coset = domain.coset_ifft(&coset_evals);
+    assert_eq!(recovered_coset, poly.coeffs);
+    
+    Ok(())
+}
+```
+
+## Performance Considerations
+
+### Parallelization
+
+FFT operations are parallelized using Rayon:
+
+```rust
+// Automatically uses all available cores
+let evaluations = domain.fft(&coeffs);
+```
+
+### In-Place Operations
+
+Use in-place variants to avoid allocations:
+
+```rust
+let mut data = coeffs.clone();
+domain.fft_in_place(&mut data);
+// data now contains evaluations, no extra allocation
+```
+
+### Domain Size Selection
+
+Choose domain sizes that are powers of 2:
+
+```rust
+// Good: exact power of 2
+let domain = EvaluationDomain::new(256)?;
+
+// Still good: rounds up to next power of 2 (256)
+let domain = EvaluationDomain::new(200)?;
+```
+
+## Common Patterns
+
+### Quotient Polynomial Computation
+
+```rust
+// Compute p(x) / Z_H(x) where Z_H(x) is the vanishing polynomial
+let domain = EvaluationDomain::new(circuit_size)?;
+let quotient = polynomial.divide_by_vanishing_poly(&domain)?;
+```
+
+### Lagrange Interpolation
+
+```rust
+// Interpolate polynomial from evaluations at domain points
+let domain = EvaluationDomain::new(evaluations.len())?;
+let evals = Evaluations::from_vec_and_domain(evaluations, domain);
+let polynomial = evals.interpolate();
+```
+
+## See Also
+
+- [Polynomial Commitments](/api/algorithms/polycommit) - Uses FFT for commitment
+- [SNARK Implementations](/api/algorithms/snark) - Uses FFT in AHP
+- [Cryptographic Hash Functions](/api/algorithms/crypto-hash) - Field arithmetic

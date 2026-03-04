@@ -1,0 +1,580 @@
+---
+title: VM
+description: Virtual machine for program execution and blockchain state management
+---
+
+## Overview
+
+The `VM` type is the highest-level interface in the synthesizer, managing program execution, deployment, verification, and blockchain state. It integrates the process, storage, and consensus logic.
+
+## Type Definition
+
+```rust
+pub struct VM<N: Network, C: ConsensusStorage<N>> {
+    /// The process for program execution
+    process: Arc<RwLock<Process<N>>>,
+    /// The puzzle for proof-of-work
+    puzzle: Puzzle<N>,
+    /// The consensus storage backend
+    store: ConsensusStore<N, C>,
+    /// Cache of partially-verified transactions
+    partially_verified_transactions: Arc<RwLock<LruCache<TransactionCacheKey<N>, N::TransmissionChecksum>>>,
+    /// Program restrictions (e.g., banned programs)
+    restrictions: Restrictions<N>,
+    /// Channel for sequential operations
+    sequential_ops_tx: Arc<RwLock<Option<mpsc::Sender<SequentialOperationRequest<N>>>>>,
+    /// Thread handle for sequential operations
+    sequential_ops_thread: Arc<Mutex<Option<thread::JoinHandle<()>>>>,
+}
+```
+
+## Initialization
+
+### VM::from
+
+Initializes a VM from consensus storage.
+
+```rust
+pub fn from(store: ConsensusStore<N, C>) -> Result<Self>
+```
+
+<ParamField path="store" type="ConsensusStore<N, C>" required>
+  Consensus storage backend containing blocks, transactions, and finalize state
+</ParamField>
+
+<ResponseField name="return" type="Result<VM<N, C>>">
+  Returns a new VM instance with all deployed programs loaded from storage
+</ResponseField>
+
+#### Example
+
+```rust
+use snarkvm_synthesizer::VM;
+use snarkvm_ledger_store::{ConsensusStore, helpers::memory::ConsensusMemory};
+use aleo_std::StorageMode;
+
+type CurrentNetwork = snarkvm_console::network::MainnetV0;
+
+let store = ConsensusStore::<CurrentNetwork, ConsensusMemory<_>>::open(
+    StorageMode::Production
+)?;
+let vm = VM::from(store)?;
+```
+
+### Loading Process
+
+During initialization, the VM:
+
+1. Loads the `credits.aleo` program and initializes its mappings
+2. Retrieves all deployment transactions from storage
+3. Loads deployments in order of block height to respect dependencies
+4. Creates the universal SRS and puzzle
+5. Spawns a background thread for sequential operations
+
+## Program Deployment
+
+### VM::deploy
+
+Creates a deployment transaction for a new program.
+
+```rust
+pub fn deploy<R: Rng + CryptoRng>(
+    &self,
+    private_key: &PrivateKey<N>,
+    program: &Program<N>,
+    fee_record: Option<Record<N, Plaintext<N>>>,
+    priority_fee_in_microcredits: u64,
+    query: Option<&dyn QueryTrait<N>>,
+    rng: &mut R,
+) -> Result<Transaction<N>, VmDeployError>
+```
+
+<ParamField path="private_key" type="&PrivateKey<N>" required>
+  Private key of the program owner
+</ParamField>
+
+<ParamField path="program" type="&Program<N>" required>
+  The program to deploy
+</ParamField>
+
+<ParamField path="fee_record" type="Option<Record<N, Plaintext<N>>>">
+  Record to pay private fee. If `None`, uses public fee from on-chain balance
+</ParamField>
+
+<ParamField path="priority_fee_in_microcredits" type="u64">
+  Additional fee on top of the base deployment cost (in microcredits)
+</ParamField>
+
+<ParamField path="query" type="Option<&dyn QueryTrait<N>>">
+  Query interface for blockchain state. Defaults to VM's block store
+</ParamField>
+
+<ParamField path="rng" type="&mut R">
+  Cryptographically secure random number generator
+</ParamField>
+
+<ResponseField name="return" type="Result<Transaction<N>, VmDeployError>">
+  Returns a deployment transaction ready to broadcast
+</ResponseField>
+
+#### Example
+
+```rust
+use snarkvm_console::program::Program;
+
+let program_source = r"
+program token.aleo;
+
+record token:
+    owner as address.private;
+    amount as u64.private;
+
+function mint:
+    input r0 as address.private;
+    input r1 as u64.private;
+    cast r0 r1 into r2 as token.record;
+    output r2 as token.record;
+";
+
+let program = Program::from_str(program_source)?;
+let deployment = vm.deploy(
+    &private_key,
+    &program,
+    Some(fee_record),
+    10_000_000, // 10 credit priority fee
+    None,
+    &mut rng,
+)?;
+```
+
+#### Deployment Cost Calculation
+
+The deployment cost is computed based on:
+
+- Program size (bytes)
+- Number of functions
+- Complexity of each function
+- Storage cost for program state
+
+Source: synthesizer/src/vm/deploy.rs:62
+
+## Program Execution
+
+### VM::execute
+
+Executes a program function and returns a transaction.
+
+```rust
+pub fn execute<R: Rng + CryptoRng>(
+    &self,
+    private_key: &PrivateKey<N>,
+    (program_id, function_name): (impl TryInto<ProgramID<N>>, impl TryInto<Identifier<N>>),
+    inputs: impl ExactSizeIterator<Item = impl TryInto<Value<N>>>,
+    fee_record: Option<Record<N, Plaintext<N>>>,
+    priority_fee_in_microcredits: u64,
+    query: Option<&dyn QueryTrait<N>>,
+    rng: &mut R,
+) -> Result<Transaction<N>, VmExecError>
+```
+
+<ParamField path="private_key" type="&PrivateKey<N>" required>
+  Private key to authorize the execution
+</ParamField>
+
+<ParamField path="program_id" type="impl TryInto<ProgramID<N>>" required>
+  Program identifier (e.g., "token.aleo")
+</ParamField>
+
+<ParamField path="function_name" type="impl TryInto<Identifier<N>>" required>
+  Function name to execute (e.g., "transfer_private")
+</ParamField>
+
+<ParamField path="inputs" type="impl ExactSizeIterator<Item = impl TryInto<Value<N>>>" required>
+  Function input values (records, plaintext values, etc.)
+</ParamField>
+
+<ParamField path="fee_record" type="Option<Record<N, Plaintext<N>>>">
+  Record for private fee. If `None`, uses public fee
+</ParamField>
+
+<ParamField path="priority_fee_in_microcredits" type="u64">
+  Additional fee on top of execution cost (in microcredits)
+</ParamField>
+
+<ParamField path="query" type="Option<&dyn QueryTrait<N>>">
+  Query interface for blockchain state
+</ParamField>
+
+<ParamField path="rng" type="&mut R">
+  Cryptographically secure random number generator
+</ParamField>
+
+<ResponseField name="return" type="Result<Transaction<N>, VmExecError>">
+  Returns an execution transaction with proof
+</ResponseField>
+
+#### Example
+
+```rust
+use snarkvm_console::program::Value;
+
+let inputs = [
+    Value::from_str("aleo1...")?,  // recipient address
+    Value::from_str("1000u64")?,   // amount
+];
+
+let transaction = vm.execute(
+    &private_key,
+    ("credits.aleo", "transfer_public"),
+    inputs.iter(),
+    None,              // public fee
+    0,                 // no priority fee
+    None,
+    &mut rng,
+)?;
+```
+
+Source: synthesizer/src/vm/execute.rs:29-49
+
+### VM::execute_with_response
+
+Executes a function and returns both the transaction and the response.
+
+```rust
+pub fn execute_with_response<R: Rng + CryptoRng>(
+    &self,
+    private_key: &PrivateKey<N>,
+    (program_id, function_name): (impl TryInto<ProgramID<N>>, impl TryInto<Identifier<N>>),
+    inputs: impl ExactSizeIterator<Item = impl TryInto<Value<N>>>,
+    fee_record: Option<Record<N, Plaintext<N>>>,
+    priority_fee_in_microcredits: u64,
+    query: Option<&dyn QueryTrait<N>>,
+    rng: &mut R,
+) -> Result<(Transaction<N>, Response<N>), VmExecError>
+```
+
+Parameters are identical to `execute`, but returns a tuple:
+
+<ResponseField name="return" type="Result<(Transaction<N>, Response<N>), VmExecError>">
+  Returns both the transaction and the function's response containing output values
+</ResponseField>
+
+Source: synthesizer/src/vm/execute.rs:57-66
+
+## Authorization
+
+Authorization is the first step of execution, creating a signed request without generating proofs.
+
+### VM::authorize
+
+Authorizes a function call without executing it.
+
+```rust
+pub fn authorize<R: Rng + CryptoRng>(
+    &self,
+    private_key: &PrivateKey<N>,
+    program_id: impl TryInto<ProgramID<N>>,
+    function_name: impl TryInto<Identifier<N>>,
+    inputs: impl IntoIterator<IntoIter = impl ExactSizeIterator<Item = impl TryInto<Value<N>>>>,
+    rng: &mut R,
+) -> Result<Authorization<N>, VmAuthError>
+```
+
+<ParamField path="private_key" type="&PrivateKey<N>" required>
+  Private key to sign the authorization
+</ParamField>
+
+<ParamField path="program_id" type="impl TryInto<ProgramID<N>>" required>
+  Program to execute
+</ParamField>
+
+<ParamField path="function_name" type="impl TryInto<Identifier<N>>" required>
+  Function to authorize
+</ParamField>
+
+<ParamField path="inputs" type="impl IntoIterator" required>
+  Function inputs
+</ParamField>
+
+<ParamField path="rng" type="&mut R" required>
+  Random number generator
+</ParamField>
+
+<ResponseField name="return" type="Result<Authorization<N>, VmAuthError>">
+  Returns an authorization that can be executed later
+</ResponseField>
+
+Source: synthesizer/src/vm/authorize.rs:23-30
+
+### VM::execute_authorization
+
+Executes a pre-authorized call.
+
+```rust
+pub fn execute_authorization<R: Rng + CryptoRng>(
+    &self,
+    execute_authorization: Authorization<N>,
+    fee_authorization: Option<Authorization<N>>,
+    query: Option<&dyn QueryTrait<N>>,
+    rng: &mut R,
+) -> Result<Transaction<N>>
+```
+
+This allows separating authorization from execution, useful for:
+
+- Offline signing
+- Multi-party computation
+- Deferred execution
+
+Source: synthesizer/src/vm/execute.rs:120-130
+
+## Fee Management
+
+### VM::authorize_fee_private
+
+Authorizes a private fee using a credits record.
+
+```rust
+pub fn authorize_fee_private<R: Rng + CryptoRng>(
+    &self,
+    private_key: &PrivateKey<N>,
+    credits: Record<N, Plaintext<N>>,
+    base_fee_in_microcredits: u64,
+    priority_fee_in_microcredits: u64,
+    deployment_or_execution_id: Field<N>,
+    rng: &mut R,
+) -> Result<Authorization<N>>
+```
+
+<ParamField path="credits" type="Record<N, Plaintext<N>>" required>
+  Credits record to spend for the fee
+</ParamField>
+
+<ParamField path="base_fee_in_microcredits" type="u64" required>
+  Minimum fee required for the operation
+</ParamField>
+
+<ParamField path="priority_fee_in_microcredits" type="u64">
+  Additional fee for priority execution
+</ParamField>
+
+<ParamField path="deployment_or_execution_id" type="Field<N>" required>
+  The deployment or execution ID this fee is for
+</ParamField>
+
+Source: synthesizer/src/vm/authorize.rs:58-66
+
+### VM::authorize_fee_public
+
+Authorizes a public fee using on-chain balance.
+
+```rust
+pub fn authorize_fee_public<R: Rng + CryptoRng>(
+    &self,
+    private_key: &PrivateKey<N>,
+    base_fee_in_microcredits: u64,
+    priority_fee_in_microcredits: u64,
+    deployment_or_execution_id: Field<N>,
+    rng: &mut R,
+) -> Result<Authorization<N>>
+```
+
+Source: synthesizer/src/vm/authorize.rs:92-99
+
+## Block Management
+
+### VM::add_next_block
+
+Adds a new block to the VM and updates state.
+
+```rust
+pub fn add_next_block(&self, block: &Block<N>) -> Result<()>
+```
+
+<ParamField path="block" type="&Block<N>" required>
+  The block to add (must be the next sequential block)
+</ParamField>
+
+<ResponseField name="return" type="Result<()>">
+  Returns `Ok(())` if the block was successfully added and finalized
+</ResponseField>
+
+#### Process
+
+1. Constructs finalize state from block metadata
+2. Inserts block into storage (atomic operation)
+3. Finalizes all transactions in the block
+4. Updates verifying keys if consensus version changes
+5. Rolls back on finalization failure
+
+Source: synthesizer/src/vm/mod.rs:472-479
+
+### VM::finalize
+
+Finalizes transactions and updates on-chain state.
+
+```rust
+pub fn finalize(
+    &self,
+    state: FinalizeGlobalState,
+    ratifications: &[Ratify<N>],
+    solutions: &Solutions<N>,
+    transactions: impl Iterator<Item = &Transaction<N>>,
+) -> Result<Vec<FinalizeOperation<N>>>
+```
+
+<ParamField path="state" type="FinalizeGlobalState" required>
+  Global finalize state (block height, timestamp, etc.)
+</ParamField>
+
+<ParamField path="ratifications" type="&[Ratify<N>]" required>
+  Block ratifications (genesis committee, block rewards, etc.)
+</ParamField>
+
+<ParamField path="solutions" type="&Solutions<N>" required>
+  Proof-of-work solutions
+</ParamField>
+
+<ParamField path="transactions" type="impl Iterator<Item = &Transaction<N>>" required>
+  Transactions to finalize
+</ParamField>
+
+<ResponseField name="return" type="Result<Vec<FinalizeOperation<N>>>">
+  Returns the list of state operations performed
+</ResponseField>
+
+## State Access
+
+### VM::finalize_store
+
+Returns the finalize storage for reading/writing mappings.
+
+```rust
+pub fn finalize_store(&self) -> &FinalizeStore<N, C::FinalizeStorage>
+```
+
+### VM::block_store
+
+Returns the block storage.
+
+```rust
+pub fn block_store(&self) -> &BlockStore<N, C::BlockStorage>
+```
+
+### VM::transaction_store
+
+Returns the transaction storage.
+
+```rust
+pub fn transaction_store(&self) -> &TransactionStore<N, C::TransactionStorage>
+```
+
+### VM::transition_store
+
+Returns the transition storage.
+
+```rust
+pub fn transition_store(&self) -> &TransitionStore<N, C::TransitionStorage>
+```
+
+Source: synthesizer/src/vm/mod.rs:285-308
+
+## Genesis Blocks
+
+### VM::genesis_beacon
+
+Creates a genesis block for a new beacon chain.
+
+```rust
+pub fn genesis_beacon<R: Rng + CryptoRng>(
+    &self,
+    private_key: &PrivateKey<N>,
+    rng: &mut R,
+) -> Result<Block<N>>
+```
+
+Creates a genesis block with 4 validators (default).
+
+Source: synthesizer/src/vm/mod.rs:328-330
+
+### VM::genesis_quorum
+
+Creates a genesis block with custom committee and balances.
+
+```rust
+pub fn genesis_quorum<R: Rng + CryptoRng>(
+    &self,
+    private_key: &PrivateKey<N>,
+    committee: Committee<N>,
+    public_balances: IndexMap<Address<N>, u64>,
+    bonded_balances: IndexMap<Address<N>, (Address<N>, Address<N>, u64)>,
+    rng: &mut R,
+) -> Result<Block<N>>
+```
+
+<ParamField path="committee" type="Committee<N>" required>
+  Initial committee of validators
+</ParamField>
+
+<ParamField path="public_balances" type="IndexMap<Address<N>, u64>" required>
+  Initial public credit balances
+</ParamField>
+
+<ParamField path="bonded_balances" type="IndexMap<Address<N>, (Address<N>, Address<N>, u64)>" required>
+  Initial bonded balances for staking
+</ParamField>
+
+Source: synthesizer/src/vm/mod.rs:383-390
+
+## Program Management
+
+### VM::contains_program
+
+Checks if a program exists in the VM.
+
+```rust
+pub fn contains_program(&self, program_id: &ProgramID<N>) -> bool
+```
+
+### VM::process
+
+Returns the underlying process.
+
+```rust
+pub fn process(&self) -> Arc<RwLock<Process<N>>>
+```
+
+## Performance Features
+
+### Sequential Operations
+
+The VM uses a background thread for operations that must be sequential:
+
+- Block additions
+- State finalization
+- Storage writes
+
+This allows the main thread to continue processing while state updates occur atomically.
+
+### Transaction Caching
+
+The VM caches partially-verified transactions to avoid redundant verification:
+
+```rust
+partially_verified_transactions: Arc<RwLock<LruCache<TransactionCacheKey<N>, N::TransmissionChecksum>>>
+```
+
+Cache key includes transaction ID and program checksums, invalidating when programs upgrade.
+
+Source: synthesizer/src/vm/mod.rs:121-132
+
+## Thread Safety
+
+The VM is `Clone` and uses `Arc<RwLock<_>>` for shared state, making it safe to use across threads:
+
+```rust
+#[derive(Clone)]
+pub struct VM<N: Network, C: ConsensusStorage<N>> { ... }
+```
+
+This allows concurrent read access while ensuring exclusive write access for state modifications.

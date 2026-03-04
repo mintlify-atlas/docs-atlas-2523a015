@@ -1,0 +1,507 @@
+---
+title: Managing Records
+description: Learn how to find, decrypt, and use records in the Aleo ledger
+---
+
+This guide covers working with records in snarkVM, including finding records, decrypting them, and using them in transactions.
+
+## Understanding Records
+
+Records are encrypted data structures that represent private state on the Aleo blockchain. Each record:
+
+- Is encrypted to a specific address
+- Can only be decrypted with the corresponding view key
+- Becomes "spent" when used as input to a transaction
+- Contains an owner and program-specific data
+
+### Record Structure
+
+A typical credits record:
+
+```aleo
+record credits:
+    owner as address.private;
+    microcredits as u64.private;
+```
+
+## Finding Records
+
+Use the ledger to find records associated with a view key:
+
+```rust
+use snarkvm_ledger::Ledger;
+use snarkvm_console::account::{ViewKey, PrivateKey};
+use snarkvm_console::network::MainnetV0;
+use snarkvm_ledger_store::ConsensusStore;
+use aleo_std::StorageMode;
+
+type CurrentNetwork = MainnetV0;
+type ConsensusMemory = snarkvm_ledger_store::helpers::memory::ConsensusMemory<CurrentNetwork>;
+
+// Initialize ledger
+let store = ConsensusStore::<CurrentNetwork, ConsensusMemory>::open(StorageMode::Production)?;
+let ledger = Ledger::load(genesis_block, StorageMode::Production)?;
+
+// Get view key
+let private_key = PrivateKey::<CurrentNetwork>::new(&mut rng)?;
+let view_key = ViewKey::try_from(&private_key)?;
+
+// Find all records
+let records = ledger.find_records(&view_key, RecordsFilter::All)?;
+
+for (commitment, record) in records {
+    println!("Record commitment: {}", commitment);
+    println!("Record owner: {}", record.owner());
+}
+```
+
+## Record Filters
+
+Filter records by spent status:
+
+### All Records
+
+```rust
+use snarkvm_ledger::RecordsFilter;
+
+// Get all records (spent and unspent)
+let all_records = ledger.find_records(&view_key, RecordsFilter::All)?;
+
+println!("Total records: {}", all_records.count());
+```
+
+### Unspent Records
+
+```rust
+// Get only unspent records (using graph key)
+let unspent_records = ledger.find_records(&view_key, RecordsFilter::Unspent)?;
+
+for (commitment, record) in unspent_records {
+    println!("Unspent record: {}", commitment);
+}
+```
+
+### Spent Records
+
+```rust
+// Get only spent records
+let spent_records = ledger.find_records(&view_key, RecordsFilter::Spent)?;
+
+println!("Spent records: {}", spent_records.count());
+```
+
+### Slow Filters
+
+For more accurate filtering (slower but uses private key):
+
+```rust
+// Slow unspent (verifies with private key)
+let slow_unspent = ledger.find_records(
+    &view_key,
+    RecordsFilter::SlowUnspent(private_key),
+)?;
+
+// Slow spent (verifies with private key)
+let slow_spent = ledger.find_records(
+    &view_key,
+    RecordsFilter::SlowSpent(private_key),
+)?;
+```
+
+<Note>
+Use `Unspent` and `Spent` filters for performance. Use `SlowUnspent` and `SlowSpent` when you need guaranteed accuracy.
+</Note>
+
+## Finding Credits Records
+
+Find unspent credits records specifically:
+
+```rust
+use indexmap::IndexMap;
+
+// Find unspent credits records
+let credits_records = ledger.find_unspent_credits_records(&view_key)?;
+
+println!("Found {} unspent credits records", credits_records.len());
+
+for (commitment, record) in credits_records.iter() {
+    // Access microcredits from the record
+    if let Some(Entry::Private(Plaintext::Literal(Literal::U64(amount), _))) = 
+        record.data().get(&Identifier::from_str("microcredits")?) 
+    {
+        println!("Record {} has {} microcredits", commitment, amount);
+    }
+}
+```
+
+## Decrypting Records
+
+Decrypt ciphertext records:
+
+```rust
+use snarkvm_console::program::{Ciphertext, Record};
+
+// Find record ciphertexts
+let record_ciphertexts = ledger.find_record_ciphertexts(&view_key, RecordsFilter::Unspent)?;
+
+for (commitment, ciphertext) in record_ciphertexts {
+    // Decrypt the record
+    match ciphertext.decrypt(&view_key) {
+        Ok(record) => {
+            println!("Decrypted record: {}", commitment);
+            println!("  Owner: {}", record.owner());
+            
+            // Access record data
+            for (identifier, entry) in record.data() {
+                println!("  {}: {:?}", identifier, entry);
+            }
+        }
+        Err(e) => {
+            eprintln!("Failed to decrypt record {}: {}", commitment, e);
+        }
+    }
+}
+```
+
+## Using Records in Transactions
+
+### Transfer with Private Record
+
+```rust
+use snarkvm_console::program::Value;
+use snarkvm_synthesizer::VM;
+
+// Find a record to spend
+let records = ledger.find_unspent_credits_records(&view_key)?;
+let input_record = records.values().next()
+    .ok_or_else(|| anyhow!("No unspent records found"))?;
+
+// Prepare inputs for transfer_private
+let recipient = Address::try_from(&recipient_private_key)?;
+let inputs = [
+    Value::<CurrentNetwork>::Record(input_record.clone()),
+    Value::from_str(&recipient.to_string())?,
+    Value::from_str("1000000u64")?, // 1 credit
+];
+
+// Execute the transfer
+let transaction = vm.execute(
+    &private_key,
+    ("credits.aleo", "transfer_private"),
+    inputs.iter(),
+    None, // No fee record
+    0,    // No priority fee
+    None,
+    rng,
+)?;
+```
+
+### Split Record
+
+```rust
+// Split a record into two
+let record = records.values().next().unwrap();
+let inputs = [
+    Value::<CurrentNetwork>::Record(record.clone()),
+    Value::from_str("500000u64")?, // Amount for first output
+];
+
+let transaction = vm.execute(
+    &private_key,
+    ("credits.aleo", "split"),
+    inputs.iter(),
+    None,
+    0,
+    None,
+    rng,
+)?;
+
+// The transaction creates two new records
+println!("Created {} new records", transaction.records().count());
+```
+
+## Extracting Records from Transactions
+
+Get records from transaction outputs:
+
+```rust
+use snarkvm_ledger_block::Transaction;
+
+// Get records from a transaction
+for (commitment, record_ciphertext) in transaction.records() {
+    println!("Output record commitment: {}", commitment);
+    
+    // Decrypt if you own it
+    if let Ok(record) = record_ciphertext.decrypt(&view_key) {
+        println!("  You own this record!");
+        println!("  Owner: {}", record.owner());
+    }
+}
+```
+
+## Record Ownership Verification
+
+Check if you own a record:
+
+```rust
+use snarkvm_console::account::GraphKey;
+
+// Derive address x-coordinate for ownership check
+let address = Address::try_from(&private_key)?;
+let address_x_coordinate = address.to_x_coordinate();
+
+// Check ownership
+let is_owner = record.is_owner_with_address_x_coordinate(&view_key, &address_x_coordinate);
+
+if is_owner {
+    println!("You own this record");
+} else {
+    println!("You do not own this record");
+}
+```
+
+## Record Tags and Serial Numbers
+
+### Computing Record Tags
+
+```rust
+use snarkvm_console::account::GraphKey;
+use snarkvm_console::program::Record;
+use snarkvm_console::types::Field;
+
+// Derive graph key
+let graph_key = GraphKey::try_from(&view_key)?;
+let sk_tag = graph_key.sk_tag();
+
+// Compute tag for a record commitment
+let commitment = Field::<CurrentNetwork>::rand(&mut rng);
+let tag = Record::<CurrentNetwork, Plaintext<CurrentNetwork>>::tag(sk_tag, commitment)?;
+
+println!("Record tag: {}", tag);
+
+// Check if record is spent by checking if tag exists
+let is_spent = ledger.contains_tag(&tag)?;
+println!("Record is spent: {}", is_spent);
+```
+
+### Computing Serial Numbers
+
+```rust
+// Compute serial number (used to mark record as spent)
+let serial_number = Record::<CurrentNetwork, Plaintext<CurrentNetwork>>::serial_number(
+    private_key,
+    commitment,
+)?;
+
+println!("Serial number: {}", serial_number);
+
+// Check if serial number exists (record is spent)
+let is_spent = ledger.contains_serial_number(&serial_number)?;
+```
+
+## Creating Custom Records
+
+Create records in your own programs:
+
+```aleo
+program token.aleo;
+
+record token:
+    owner as address.private;
+    amount as u64.private;
+    token_id as field.private;
+
+function mint:
+    input r0 as address.private;
+    input r1 as u64.private;
+    input r2 as field.private;
+    cast r0 r1 r2 into r3 as token.record;
+    output r3 as token.record;
+```
+
+Use the custom record type:
+
+```rust
+// Execute mint function
+let inputs = [
+    Value::from_str(&address.to_string())?,
+    Value::from_str("1000u64")?,
+    Value::from_str(&format!("{}field", Field::<CurrentNetwork>::rand(&mut rng)))?,
+];
+
+let transaction = vm.execute(
+    &private_key,
+    ("token.aleo", "mint"),
+    inputs.iter(),
+    None,
+    0,
+    None,
+    rng,
+)?;
+
+// Extract the minted token record
+for (commitment, record_ciphertext) in transaction.records() {
+    if let Ok(record) = record_ciphertext.decrypt(&view_key) {
+        println!("Minted token record: {}", commitment);
+    }
+}
+```
+
+## Record Storage Patterns
+
+### Indexing Records
+
+```rust
+use std::collections::HashMap;
+use snarkvm_console::types::Field;
+
+struct RecordIndex<N: Network> {
+    records: HashMap<Field<N>, Record<N, Plaintext<N>>>,
+}
+
+impl<N: Network> RecordIndex<N> {
+    fn new() -> Self {
+        Self { records: HashMap::new() }
+    }
+
+    fn add_record(&mut self, commitment: Field<N>, record: Record<N, Plaintext<N>>) {
+        self.records.insert(commitment, record);
+    }
+
+    fn find_by_amount(&self, min_amount: u64) -> Vec<&Record<N, Plaintext<N>>> {
+        self.records
+            .values()
+            .filter(|record| {
+                if let Some(Entry::Private(Plaintext::Literal(Literal::U64(amount), _))) = 
+                    record.data().get(&Identifier::from_str("microcredits").unwrap())
+                {
+                    amount >= &min_amount
+                } else {
+                    false
+                }
+            })
+            .collect()
+    }
+}
+```
+
+### Caching Unspent Records
+
+```rust
+use std::sync::{Arc, RwLock};
+
+struct RecordCache<N: Network> {
+    unspent: Arc<RwLock<IndexMap<Field<N>, Record<N, Plaintext<N>>>>>,
+}
+
+impl<N: Network> RecordCache<N> {
+    fn new() -> Self {
+        Self {
+            unspent: Arc::new(RwLock::new(IndexMap::new())),
+        }
+    }
+
+    fn refresh(&self, ledger: &Ledger<N, impl ConsensusStorage<N>>, view_key: &ViewKey<N>) -> Result<()> {
+        let records = ledger.find_unspent_credits_records(view_key)?;
+        let mut cache = self.unspent.write().unwrap();
+        cache.clear();
+        cache.extend(records);
+        Ok(())
+    }
+
+    fn get_records(&self) -> IndexMap<Field<N>, Record<N, Plaintext<N>>> {
+        self.unspent.read().unwrap().clone()
+    }
+}
+```
+
+## Error Handling
+
+Handle record-related errors:
+
+```rust
+fn process_records(
+    ledger: &Ledger<CurrentNetwork, impl ConsensusStorage<CurrentNetwork>>,
+    view_key: &ViewKey<CurrentNetwork>,
+) -> Result<()> {
+    match ledger.find_unspent_credits_records(view_key) {
+        Ok(records) => {
+            if records.is_empty() {
+                println!("No unspent records found");
+                return Ok(());
+            }
+            
+            for (commitment, record) in records {
+                println!("Processing record: {}", commitment);
+            }
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("Failed to find records: {}", e);
+            // Common errors:
+            // - Ledger not initialized
+            // - Invalid view key
+            // - Database connection error
+            Err(e)
+        }
+    }
+}
+```
+
+## Best Practices
+
+### Select Records Efficiently
+
+Choose the smallest sufficient record for transactions:
+
+```rust
+fn find_optimal_record(
+    records: &IndexMap<Field<CurrentNetwork>, Record<CurrentNetwork, Plaintext<CurrentNetwork>>>,
+    required_amount: u64,
+) -> Option<Record<CurrentNetwork, Plaintext<CurrentNetwork>>> {
+    records
+        .values()
+        .filter_map(|record| {
+            if let Some(Entry::Private(Plaintext::Literal(Literal::U64(amount), _))) = 
+                record.data().get(&Identifier::from_str("microcredits").unwrap())
+            {
+                if amount >= &required_amount {
+                    Some((amount, record))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        })
+        .min_by_key(|(amount, _)| *amount)
+        .map(|(_, record)| record.clone())
+}
+```
+
+### Batch Record Operations
+
+Process multiple records efficiently:
+
+```rust
+use rayon::prelude::*;
+
+let records: Vec<_> = ledger
+    .find_records(&view_key, RecordsFilter::Unspent)?
+    .collect();
+
+// Process records in parallel
+let processed: Vec<_> = records
+    .par_iter()
+    .filter_map(|(commitment, record)| {
+        // Process each record
+        Some((commitment, record.owner()))
+    })
+    .collect();
+```
+
+## Next Steps
+
+- Learn about [executing transactions](/guides/executing-transactions) using records
+- Explore [working with accounts](/guides/working-with-accounts) to manage record ownership
+- Understand [deploying programs](/guides/deploying-programs) that create custom records

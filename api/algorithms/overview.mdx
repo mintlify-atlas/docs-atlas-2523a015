@@ -1,0 +1,147 @@
+---
+title: 'Algorithms Crate'
+description: 'Overview of the snarkvm-algorithms crate and its cryptographic primitives'
+---
+
+## About
+
+The `snarkvm-algorithms` crate contains cryptographic algorithms and primitives for zero-knowledge proof construction in SnarkVM. This crate implements the mathematical foundations required for the Aleo blockchain's proof system.
+
+**Package:** `snarkvm-algorithms`  
+**Version:** 4.4.0  
+**License:** Apache-2.0  
+
+## Core Modules
+
+<CardGroup cols={2}>
+  <Card title="Cryptographic Hashing" icon="hash" href="/api/algorithms/crypto-hash">
+    Poseidon and SHA-256 hash functions optimized for ZK circuits
+  </Card>
+  
+  <Card title="SNARK Systems" icon="shield-check" href="/api/algorithms/snark">
+    Varuna zkSNARK implementation with AHP for R1CS
+  </Card>
+  
+  <Card title="Polynomial Commitments" icon="signature" href="/api/algorithms/polycommit">
+    KZG10 and SonicKZG10 polynomial commitment schemes
+  </Card>
+  
+  <Card title="FFT Operations" icon="wave-sine" href="/api/algorithms/fft">
+    Fast Fourier Transform for polynomial arithmetic
+  </Card>
+</CardGroup>
+
+## Key Features
+
+### Zero-Knowledge Proofs
+
+- **Varuna zkSNARK** - Universal preprocessing zkSNARK with batch proving
+- **AHP for R1CS** - Algebraic Holographic Proof compilation
+- **Fiat-Shamir transformation** - Non-interactive proof generation
+
+### Polynomial Arithmetic
+
+- **FFT/IFFT** - O(n log n) polynomial operations
+- **Evaluation domains** - Powers-of-two roots of unity
+- **Dense and sparse polynomials** - Memory-efficient representations
+
+### Cryptographic Commitments
+
+- **KZG polynomial commitments** - Constant-size commitments with pairing-based verification
+- **Batched opening proofs** - Amortized verification cost
+- **Degree bounds** - Enforced polynomial degree constraints
+
+### Optimized Primitives
+
+- **Multi-scalar multiplication** - Pippenger's algorithm with parallel execution
+- **Poseidon hash** - Algebraic hash function for efficient ZK circuits
+- **Batch operations** - Parallelized cryptographic operations
+
+## Module Organization
+
+```
+snarkvm-algorithms/
+├── crypto_hash/        # Cryptographic hash functions
+│   ├── poseidon.rs     # Poseidon hash and sponge
+│   └── sha256.rs       # SHA-256 implementation
+├── fft/                # Fast Fourier Transform
+│   ├── domain.rs       # Evaluation domains
+│   ├── evaluations.rs  # Lagrange evaluations
+│   └── polynomial/     # Polynomial types
+├── polycommit/         # Polynomial commitments
+│   ├── kzg10/          # KZG10 scheme
+│   └── sonic_pc/       # SonicKZG10 with batching
+├── snark/              # zkSNARK implementations
+│   └── varuna/         # Varuna proof system
+├── msm/                # Multi-scalar multiplication
+├── r1cs/               # R1CS constraint system
+├── srs/                # Structured reference string
+└── traits/             # Core trait definitions
+```
+
+## Usage Example
+
+```rust
+use snarkvm_algorithms::{
+    crypto_hash::Poseidon,
+    fft::{DensePolynomial, EvaluationDomain},
+    polycommit::kzg10::KZG10,
+    snark::varuna::VarunaSNARK,
+};
+
+// Hash with Poseidon
+let poseidon = Poseidon::<Fr, 4>::setup();
+let hash = poseidon.evaluate(&[field1, field2, field3]);
+
+// Polynomial operations
+let domain = EvaluationDomain::new(256)?;
+let poly = DensePolynomial::from_coefficients_vec(coeffs);
+let evals = domain.fft(&poly);
+
+// Polynomial commitments
+let srs = KZG10::load_srs(max_degree)?;
+let (commitment, randomness) = KZG10::commit(&powers, &poly, None, None)?;
+
+// zkSNARK proving
+type Varuna = VarunaSNARK<Bls12_377, PoseidonSponge<Fq, 2, 1>, DefaultMode>;
+let proof = Varuna::prove(&prover, &fs_params, &pk, version, &circuit, rng)?;
+let valid = Varuna::verify(&verifier, &fs_params, &vk, version, &input, &proof)?;
+```
+
+## Performance
+
+### Parallelization
+
+Most operations are parallelized using Rayon:
+
+- FFT operations split across available cores
+- MSM uses parallel bucket accumulation
+- Polynomial commitment batching
+- Parallel constraint synthesis
+
+### CUDA Acceleration
+
+Enable the `cuda` feature for GPU acceleration of:
+
+- Multi-scalar multiplication (MSM)
+- FFT/IFFT operations
+- Polynomial evaluations
+
+```toml
+[dependencies]
+snarkvm-algorithms = { version = "4.4.0", features = ["cuda"] }
+```
+
+## Related Crates
+
+- `snarkvm-fields` - Finite field arithmetic implementations
+- `snarkvm-curves` - Elliptic curve group operations
+- `snarkvm-console` - High-level VM types
+- `snarkvm-circuit` - Circuit-level constraint synthesis
+
+## See Also
+
+- [Cryptographic Hash Functions](/api/algorithms/crypto-hash)
+- [SNARK Implementations](/api/algorithms/snark)
+- [Polynomial Commitments](/api/algorithms/polycommit)
+- [FFT Implementations](/api/algorithms/fft)

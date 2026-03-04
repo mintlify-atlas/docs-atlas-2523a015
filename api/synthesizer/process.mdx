@@ -1,0 +1,641 @@
+---
+title: Process & Stack
+description: Program execution coordinator and stack management
+---
+
+## Overview
+
+The `Process` and `Stack` types form the core of program execution in snarkVM. The Process manages multiple program stacks, while each Stack contains the execution context for a single program.
+
+## Process
+
+### Type Definition
+
+```rust
+pub struct Process<N: Network> {
+    /// The universal SRS for proof generation
+    universal_srs: UniversalSRS<N>,
+    /// Mapping of program IDs to their execution stacks
+    stacks: Arc<RwLock<IndexMap<ProgramID<N>, Arc<Stack<N>>>>>,
+    /// Staging area for program upgrades
+    old_stacks: Arc<RwLock<IndexMap<ProgramID<N>, Option<Arc<Stack<N>>>>>>,
+}
+```
+
+Source: synthesizer/process/src/lib.rs:87-95
+
+### Initialization
+
+#### Process::load
+
+Initializes a process with the credits.aleo program.
+
+```rust
+pub fn load() -> Result<Self>
+```
+
+<ResponseField name="return" type="Result<Process<N>>">
+  Returns a process with `credits.aleo` loaded and verifying keys initialized
+</ResponseField>
+
+#### Example
+
+```rust
+use snarkvm_synthesizer_process::Process;
+use snarkvm_console::network::MainnetV0;
+
+let process = Process::<MainnetV0>::load()?;
+```
+
+Source: synthesizer/process/src/lib.rs:227-263
+
+#### Process::setup
+
+Initializes a process and synthesizes proving keys.
+
+```rust
+pub fn setup<A: circuit::Aleo<Network = N>, R: Rng + CryptoRng>(rng: &mut R) -> Result<Self>
+```
+
+<ParamField path="A" type="circuit::Aleo<Network = N>" required>
+  Circuit implementation type (e.g., `AleoV0`)
+</ParamField>
+
+<ParamField path="rng" type="&mut R" required>
+  Random number generator for key synthesis
+</ParamField>
+
+<ResponseField name="return" type="Result<Process<N>>">
+  Returns a process with full proving and verifying keys
+</ResponseField>
+
+This is used for testing and development. Production systems use `load()` and load pre-computed keys.
+
+Source: synthesizer/process/src/lib.rs:100-129
+
+### Stack Management
+
+#### Process::add_stack
+
+Adds a program stack to the process.
+
+```rust
+pub fn add_stack(&mut self, stack: Stack<N>) -> Option<Arc<Stack<N>>>
+```
+
+<ParamField path="stack" type="Stack<N>" required>
+  The stack to add
+</ParamField>
+
+<ResponseField name="return" type="Option<Arc<Stack<N>>>">
+  Returns the previous stack if one existed for this program
+</ResponseField>
+
+Source: synthesizer/process/src/lib.rs:135-142
+
+#### Process::stage_stack
+
+Stages a stack for transactional updates.
+
+```rust
+pub fn stage_stack(&self, stack: Stack<N>)
+```
+
+Staged stacks can be committed with `commit_stacks()` or reverted with `revert_stacks()`.
+
+Source: synthesizer/process/src/lib.rs:149-161
+
+#### Process::commit_stacks
+
+Commits all staged stacks.
+
+```rust
+pub fn commit_stacks(&self)
+```
+
+Source: synthesizer/process/src/lib.rs:166-169
+
+#### Process::revert_stacks
+
+Reverts all staged stacks to their previous state.
+
+```rust
+pub fn revert_stacks(&self)
+```
+
+Source: synthesizer/process/src/lib.rs:174-185
+
+### Program Execution
+
+#### Process::execute
+
+Executes an authorization and returns the response and trace.
+
+```rust
+pub fn execute<A: circuit::Aleo<Network = N>, R: CryptoRng + Rng>(
+    &self,
+    authorization: Authorization<N>,
+    rng: &mut R,
+) -> Result<(Response<N>, Trace<N>), ProcessExecError>
+```
+
+<ParamField path="A" type="circuit::Aleo<Network = N>" required>
+  Circuit implementation type
+</ParamField>
+
+<ParamField path="authorization" type="Authorization<N>" required>
+  The authorized function call
+</ParamField>
+
+<ParamField path="rng" type="&mut R" required>
+  Random number generator
+</ParamField>
+
+<ResponseField name="return" type="Result<(Response<N>, Trace<N>), ProcessExecError>">
+  Returns the function response and execution trace
+</ResponseField>
+
+#### Example
+
+```rust
+let authorization = process.authorize::<AleoV0, _>(
+    &private_key,
+    program_id,
+    function_name,
+    inputs.iter(),
+    rng,
+)?;
+
+let (response, trace) = process.execute::<AleoV0, _>(authorization, rng)?;
+```
+
+Source: synthesizer/process/src/execute.rs:22-61
+
+### Program Authorization
+
+#### Process::authorize
+
+Creates an authorization for a function call.
+
+```rust
+pub fn authorize<A: circuit::Aleo<Network = N>, R: Rng + CryptoRng>(
+    &self,
+    private_key: &PrivateKey<N>,
+    program_id: impl TryInto<ProgramID<N>>,
+    function_name: impl TryInto<Identifier<N>>,
+    inputs: impl ExactSizeIterator<Item = impl TryInto<Value<N>>>,
+    rng: &mut R,
+) -> Result<Authorization<N>>
+```
+
+Source: synthesizer/process/src/authorize.rs
+
+### Program Deployment
+
+#### Process::deploy
+
+Creates a deployment for a program.
+
+```rust
+pub fn deploy<A: circuit::Aleo<Network = N>, R: Rng + CryptoRng>(
+    &self,
+    program: &Program<N>,
+    rng: &mut R,
+) -> Result<Deployment<N>>
+```
+
+<ParamField path="program" type="&Program<N>" required>
+  The program to deploy
+</ParamField>
+
+<ResponseField name="return" type="Result<Deployment<N>>">
+  Returns a deployment with synthesized verifying keys
+</ResponseField>
+
+Source: synthesizer/process/src/deploy.rs
+
+### Deployment Loading
+
+#### Process::load_deployment
+
+Loads a deployment into the process.
+
+```rust
+pub fn load_deployment(&mut self, deployment: &Deployment<N>) -> Result<()>
+```
+
+<ParamField path="deployment" type="&Deployment<N>" required>
+  The deployment to load
+</ParamField>
+
+This method:
+
+1. Extracts the program from the deployment
+2. Creates a new stack for the program
+3. Loads verifying keys from the deployment
+4. Adds the stack to the process
+
+### Program Queries
+
+#### Process::contains_program
+
+Checks if a program exists.
+
+```rust
+pub fn contains_program(&self, program_id: &ProgramID<N>) -> bool
+```
+
+#### Process::get_program
+
+Retrieves a program by ID.
+
+```rust
+pub fn get_program(&self, program_id: &ProgramID<N>) -> Result<&Program<N>>
+```
+
+#### Process::get_stack
+
+Retrieves a stack by program ID.
+
+```rust
+pub fn get_stack(&self, program_id: &ProgramID<N>) -> Result<Arc<Stack<N>>>
+```
+
+## Stack
+
+### Type Definition
+
+```rust
+pub struct Stack<N: Network> {
+    /// The program (record types, structs, functions)
+    program: Program<N>,
+    /// Reference to the global stack map
+    stacks: Weak<RwLock<IndexMap<ProgramID<N>, Arc<Stack<N>>>>>,
+    /// Register types for constructor
+    constructor_types: Arc<RwLock<Option<FinalizeTypes<N>>>>,
+    /// Mapping of closure/function names to register types
+    register_types: Arc<RwLock<IndexMap<Identifier<N>, RegisterTypes<N>>>>,
+    /// Mapping of finalize names to register types
+    finalize_types: Arc<RwLock<IndexMap<Identifier<N>, FinalizeTypes<N>>>>,
+    /// The universal SRS
+    universal_srs: UniversalSRS<N>,
+    /// Proving keys for each function
+    proving_keys: Arc<RwLock<IndexMap<Identifier<N>, ProvingKey<N>>>>,
+    /// Verifying keys for each function
+    verifying_keys: Arc<RwLock<IndexMap<Identifier<N>, VerifyingKey<N>>>>,
+    /// Program address
+    program_address: Address<N>,
+    /// Program checksum
+    program_checksum: [U8<N>; 32],
+    /// Program edition (version number)
+    program_edition: U16<N>,
+    /// Program owner (for upgradeable programs)
+    program_owner: Option<Address<N>>,
+}
+```
+
+Source: synthesizer/process/src/stack/mod.rs:210-236
+
+### Initialization
+
+#### Stack::new
+
+Creates a new stack for a program.
+
+```rust
+pub fn new(process: &Process<N>, program: &Program<N>) -> Result<Self>
+```
+
+<ParamField path="process" type="&Process<N>" required>
+  The parent process
+</ParamField>
+
+<ParamField path="program" type="&Program<N>" required>
+  The program to create a stack for
+</ParamField>
+
+<ResponseField name="return" type="Result<Stack<N>>">
+  Returns a stack with initialized register types and state
+</ResponseField>
+
+This method:
+
+1. Validates the program is well-formed
+2. Checks for program conflicts or valid upgrades
+3. Initializes register types for closures and functions
+4. Initializes finalize types
+5. Validates all dependencies exist
+
+Source: synthesizer/process/src/stack/mod.rs:240-265
+
+### Register Type Management
+
+#### Stack::get_register_types
+
+Returns register types for a closure or function.
+
+```rust
+pub fn get_register_types(&self, name: &Identifier<N>) -> Result<RegisterTypes<N>>
+```
+
+<ParamField path="name" type="&Identifier<N>" required>
+  The closure or function name
+</ParamField>
+
+Source: synthesizer/process/src/stack/mod.rs:364-370
+
+#### Stack::get_finalize_types
+
+Returns register types for finalize logic.
+
+```rust
+pub fn get_finalize_types(&self, name: &Identifier<N>) -> Result<FinalizeTypes<N>>
+```
+
+Source: synthesizer/process/src/stack/mod.rs:374-380
+
+### Proving/Verifying Keys
+
+#### Stack::insert_proving_key
+
+Inserts a proving key for a function.
+
+```rust
+pub fn insert_proving_key(
+    &self,
+    function_name: &Identifier<N>,
+    proving_key: ProvingKey<N>,
+) -> Result<()>
+```
+
+#### Stack::insert_verifying_key
+
+Inserts a verifying key for a function.
+
+```rust
+pub fn insert_verifying_key(
+    &self,
+    function_name: &Identifier<N>,
+    verifying_key: VerifyingKey<N>,
+) -> Result<()>
+```
+
+#### Stack::proving_key
+
+Retrieves the proving key for a function.
+
+```rust
+pub fn proving_key(&self, function_name: &Identifier<N>) -> Result<ProvingKey<N>>
+```
+
+#### Stack::verifying_key
+
+Retrieves the verifying key for a function.
+
+```rust
+pub fn verifying_key(&self, function_name: &Identifier<N>) -> Result<VerifyingKey<N>>
+```
+
+### Circuit Synthesis
+
+#### Stack::synthesize_key
+
+Synthesizes proving and verifying keys for a function.
+
+```rust
+pub fn synthesize_key<A: circuit::Aleo<Network = N>, R: Rng + CryptoRng>(
+    &self,
+    function_name: &Identifier<N>,
+    rng: &mut R,
+) -> Result<()>
+```
+
+<ParamField path="A" type="circuit::Aleo<Network = N>" required>
+  Circuit implementation
+</ParamField>
+
+<ParamField path="function_name" type="&Identifier<N>" required>
+  Function to synthesize keys for
+</ParamField>
+
+<ParamField path="rng" type="&mut R" required>
+  Random number generator
+</ParamField>
+
+This is expensive and should only be done during setup or deployment.
+
+### Function Execution
+
+#### Stack::execute_function
+
+Executes a function and returns the response.
+
+```rust
+pub fn execute_function<A: circuit::Aleo<Network = N>, R: Rng + CryptoRng>(
+    &self,
+    call_stack: CallStack<N>,
+    caller: Option<ProgramID<N>>,
+    root_tvk: Option<Field<N>>,
+    rng: &mut R,
+) -> Result<Response<N>>
+```
+
+<ParamField path="call_stack" type="CallStack<N>" required>
+  The call stack containing authorization and trace
+</ParamField>
+
+<ParamField path="caller" type="Option<ProgramID<N>>">
+  The calling program (for nested calls)
+</ParamField>
+
+<ParamField path="root_tvk" type="Option<Field<N>>">
+  Transaction view key for record encryption
+</ParamField>
+
+Source: synthesizer/process/src/stack/execute.rs
+
+### Evaluation (No Proof)
+
+#### Stack::evaluate_function
+
+Evaluates a function without generating proofs.
+
+```rust
+pub fn evaluate_function<R: Rng + CryptoRng>(
+    &self,
+    call_stack: CallStack<N>,
+    rng: &mut R,
+) -> Result<Response<N>>
+```
+
+Useful for:
+
+- Testing
+- Query operations (read-only)
+- Local computation
+
+Source: synthesizer/process/src/stack/evaluate.rs
+
+## CallStack
+
+The `CallStack` tracks execution state.
+
+```rust
+pub enum CallStack<N: Network> {
+    /// Authorize an Execute transaction
+    Authorize(Vec<Request<N>>, Option<PrivateKey<N>>, Authorization<N>),
+    /// Synthesize a function circuit before Deploy
+    Synthesize(Vec<Request<N>>, PrivateKey<N>, Authorization<N>),
+    /// Validate a Deploy transaction's function circuit
+    CheckDeployment(Vec<Request<N>>, PrivateKey<N>, Assignments<N>, Option<u64>, Option<u64>),
+    /// Evaluate a function (no proof)
+    Evaluate(Authorization<N>),
+    /// Execute a function and produce a proof
+    Execute(Authorization<N>, Arc<RwLock<Trace<N>>>),
+    /// Execute a function and create the circuit assignment
+    PackageRun(Vec<Request<N>>, PrivateKey<N>, Assignments<N>),
+}
+```
+
+Source: synthesizer/process/src/stack/mod.rs:102-116
+
+### CallStack Methods
+
+#### CallStack::push
+
+Pushes a request onto the call stack.
+
+```rust
+pub fn push(&mut self, request: Request<N>) -> Result<()>
+```
+
+#### CallStack::pop
+
+Pops a request from the call stack.
+
+```rust
+pub fn pop(&mut self) -> Result<Request<N>>
+```
+
+#### CallStack::peek
+
+Peeks at the next request without popping.
+
+```rust
+pub fn peek(&mut self) -> Result<Request<N>>
+```
+
+Source: synthesizer/process/src/stack/mod.rs:160-207
+
+## Trace
+
+The `Trace` records execution history.
+
+```rust
+pub struct Trace<N: Network> {
+    /// The transitions in the trace
+    transitions: Vec<Transition<N>>,
+    /// The global state at finalization
+    global_state: FinalizeGlobalState,
+    // ... additional fields for proving
+}
+```
+
+### Trace Methods
+
+#### Trace::prove_execution
+
+Generates a proof from the trace.
+
+```rust
+pub fn prove_execution<A: circuit::Aleo<Network = N>, R: Rng + CryptoRng>(
+    &self,
+    locator: &str,
+    varuna_version: VarunaVersion,
+    rng: &mut R,
+) -> Result<Execution<N>>
+```
+
+#### Trace::prove_fee
+
+Generates a fee proof from the trace.
+
+```rust
+pub fn prove_fee<A: circuit::Aleo<Network = N>, R: Rng + CryptoRng>(
+    &self,
+    varuna_version: VarunaVersion,
+    rng: &mut R,
+) -> Result<Fee<N>>
+```
+
+## Authorization
+
+The `Authorization` type encapsulates authorized function calls.
+
+```rust
+pub struct Authorization<N: Network> {
+    /// The requests in the authorization
+    requests: Vec<Request<N>>,
+    // ... additional fields
+}
+```
+
+### Authorization Methods
+
+#### Authorization::push
+
+Adds a request to the authorization.
+
+```rust
+pub fn push(&mut self, request: Request<N>) -> Result<()>
+```
+
+#### Authorization::next
+
+Returns the next request.
+
+```rust
+pub fn next(&mut self) -> Result<Request<N>>
+```
+
+#### Authorization::peek_next
+
+Peeks at the next request.
+
+```rust
+pub fn peek_next(&self) -> Result<Request<N>>
+```
+
+## Cost Calculation
+
+### execution_cost
+
+Calculates the execution cost.
+
+```rust
+pub fn execution_cost(
+    process: &Process<N>,
+    execution: &Execution<N>,
+    consensus_version: ConsensusVersion,
+) -> Result<(u64, (u64, u64))>
+```
+
+<ResponseField name="return" type="Result<(u64, (u64, u64))>">
+  Returns `(minimum_cost, (storage_cost, namespace_cost))`
+</ResponseField>
+
+Source: synthesizer/process/src/cost.rs
+
+### deployment_cost
+
+Calculates the deployment cost.
+
+```rust
+pub fn deployment_cost(
+    process: &Process<N>,
+    deployment: &Deployment<N>,
+    consensus_version: ConsensusVersion,
+) -> Result<(u64, (u64, u64))>
+```
+
+Source: synthesizer/process/src/cost.rs

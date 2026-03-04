@@ -1,0 +1,484 @@
+---
+title: Deploying Programs
+description: Learn how to deploy Aleo programs to the network using snarkVM
+---
+
+This guide covers deploying programs to the Aleo network, including deployment preparation, fee calculation, and transaction creation.
+
+## Prerequisites
+
+Before deploying a program, ensure you:
+
+- Have a compiled program (see [Creating Programs](/guides/creating-programs))
+- Have sufficient credits for deployment fees
+- Have access to unspent records or public balance
+
+## Basic Deployment
+
+Deploy a program using the VM:
+
+```rust
+use snarkvm_synthesizer::{VM, Program};
+use snarkvm_console::account::PrivateKey;
+use snarkvm_console::network::MainnetV0;
+use snarkvm_ledger_store::ConsensusStore;
+use aleo_std::StorageMode;
+use rand::thread_rng;
+
+type CurrentNetwork = MainnetV0;
+
+let rng = &mut thread_rng();
+
+// Initialize VM
+let store = ConsensusStore::open(StorageMode::Production)?;
+let vm = VM::from(store)?;
+
+// Parse the program
+let program_source = r"
+program hello.aleo;
+
+function main:
+    input r0 as u32.public;
+    add r0 1u32 into r1;
+    output r1 as u32.public;
+";
+
+let program = Program::<CurrentNetwork>::from_str(program_source)?;
+
+// Deploy the program
+let private_key = PrivateKey::<CurrentNetwork>::new(rng)?;
+
+let transaction = vm.deploy(
+    &private_key,
+    &program,
+    None,    // No fee record (uses public fee)
+    0,       // No priority fee
+    None,    // Use default query
+    rng,
+)?;
+
+println!("Deployment transaction: {}", transaction.id());
+```
+
+## Deployment with Private Fee
+
+Use a credits record to pay the deployment fee:
+
+<Steps>
+
+### Find Unspent Credits Records
+
+```rust
+use snarkvm_console::account::ViewKey;
+use snarkvm_ledger::Ledger;
+
+// Derive view key
+let view_key = ViewKey::try_from(&private_key)?;
+
+// Find unspent records
+let records = ledger.find_unspent_credits_records(&view_key)?;
+
+if records.len() == 0 {
+    return Err(anyhow!("No unspent records available for deployment fee"));
+}
+```
+
+### Create Deployment Transaction
+
+```rust
+// Select a record for the fee
+let fee_record = records.values().next().cloned();
+
+// Deploy with private fee
+let transaction = vm.deploy(
+    &private_key,
+    &program,
+    fee_record,
+    10_000, // Priority fee in microcredits
+    None,
+    rng,
+)?;
+```
+
+</Steps>
+
+## Deployment Cost Calculation
+
+Calculate deployment costs before deploying:
+
+```rust
+use snarkvm_synthesizer_process::{deployment_cost, deploy_compute_cost_in_microcredits};
+use snarkvm_ledger_query::Query;
+
+// Get the current block height and consensus version
+let query = Query::VM(vm.block_store().clone());
+let current_height = query.current_block_height()?;
+let consensus_version = CurrentNetwork::CONSENSUS_VERSION(current_height)?;
+
+// Generate deployment
+let deployment = vm.deploy_raw(&program, rng)?;
+
+// Calculate cost
+let (minimum_cost, (storage_cost, namespace_cost)) = deployment_cost(
+    &vm.process().read(),
+    &deployment,
+    consensus_version,
+)?;
+
+println!("Minimum deployment cost: {} microcredits", minimum_cost);
+println!("  Storage cost: {} microcredits", storage_cost);
+println!("  Namespace cost: {} microcredits", namespace_cost);
+```
+
+<Note>
+Deployment costs vary based on program complexity. Larger programs with more functions and verifying keys cost more to deploy.
+</Note>
+
+## Using the Ledger Helper
+
+The `Ledger` provides a convenient method for creating deployments:
+
+```rust
+use snarkvm_ledger::Ledger;
+
+// Create deployment using ledger
+let transaction = ledger.create_deploy(
+    &private_key,
+    &program,
+    10_000, // Priority fee (on top of base deployment fee)
+    None,   // Query (optional)
+    rng,
+)?;
+
+println!("Created deployment: {}", transaction.id());
+```
+
+## Deployment Verification
+
+Verify the deployment before broadcasting:
+
+```rust
+// Verify the transaction
+vm.check_transaction(&transaction, None, rng)?;
+
+println!("Deployment transaction is valid");
+
+// Extract deployment details
+if let Some(deployment) = transaction.deployment() {
+    println!("Program ID: {}", deployment.program_id());
+    println!("Edition: {}", deployment.edition());
+    
+    // Verify program owner (available in V9+)
+    if let Some(owner) = deployment.program_owner() {
+        let address = Address::try_from(&private_key)?;
+        println!("Program owner: {}", owner.address());
+        assert_eq!(owner.address(), &address);
+    }
+}
+```
+
+## Program Ownership
+
+Starting with consensus version V9, programs have owners:
+
+```rust
+use snarkvm_console::program::ProgramOwner;
+
+// After deployment, the program has an owner
+if let Some(deployment) = transaction.deployment() {
+    if let Some(owner) = deployment.program_owner() {
+        println!("Program owner address: {}", owner.address());
+        println!("Program owner signature verified");
+    } else {
+        println!("Program deployed before V9 (no owner)");
+    }
+}
+```
+
+<Note>
+**Program Ownership Rules**
+
+- Programs deployed after V9 activation have owners
+- Only the owner can upgrade programs (future functionality)
+- Owner is set to the deployment transaction signer
+- Programs deployed before V9 have no owner
+</Note>
+
+## Program Editions
+
+Deploy program updates using editions:
+
+```aleo
+program hello.aleo;
+
+constructor:
+    assert.eq edition 1u16;
+
+function main:
+    input r0 as u32.public;
+    add r0 2u32 into r1; // Updated logic
+    output r1 as u32.public;
+```
+
+Deploy the updated version:
+
+```rust
+// Parse the updated program
+let updated_program = Program::<CurrentNetwork>::from_str(program_source_v2)?;
+
+// Deploy new edition
+let transaction = vm.deploy(
+    &private_key,
+    &updated_program,
+    fee_record,
+    0,
+    None,
+    rng,
+)?;
+
+// Check the edition
+if let Some(deployment) = transaction.deployment() {
+    println!("Deployed edition: {}", deployment.edition());
+}
+```
+
+## Handling Deployment Failures
+
+```rust
+match vm.deploy(&private_key, &program, fee_record, 0, None, rng) {
+    Ok(transaction) => {
+        println!("Deployment successful: {}", transaction.id());
+    }
+    Err(e) => {
+        eprintln!("Deployment failed: {}", e);
+        // Common errors:
+        // - Program already exists
+        // - Insufficient balance for fees
+        // - Invalid program syntax
+        // - Dependency not found (imports)
+        // - Invalid edition number
+    }
+}
+```
+
+## Advanced: Multi-Step Deployment
+
+For more control, separate key generation from transaction creation:
+
+<Steps>
+
+### Generate Deployment
+
+```rust
+// Generate the deployment (keys and verification)
+let deployment = vm.deploy_raw(&program, rng)?;
+
+println!("Generated deployment:");
+println!("  Program: {}", deployment.program_id());
+println!("  Functions: {}", deployment.program().functions().len());
+println!("  Verifying keys: {}", deployment.verifying_keys().len());
+```
+
+### Set Deployment Metadata
+
+Configure checksum and owner (for V9+):
+
+```rust
+use snarkvm_ledger_block::Deployment;
+
+let mut deployment = vm.deploy_raw(&program, rng)?;
+
+// Set checksum (V9+)
+let checksum = deployment.program().to_checksum();
+deployment.set_program_checksum_raw(Some(checksum));
+
+// Set owner (V9+)
+let owner_address = Address::try_from(&private_key)?;
+deployment.set_program_owner_raw(Some(owner_address));
+```
+
+### Create Transaction with Fee
+
+```rust
+use snarkvm_console::types::Field;
+
+// Get deployment ID for fee authorization
+let deployment_id = deployment.to_deployment_id()?;
+
+// Authorize fee
+let fee_authorization = vm.authorize_fee_public(
+    &private_key,
+    minimum_cost,
+    priority_fee,
+    deployment_id,
+    rng,
+)?;
+
+// Execute fee
+let fee = vm.execute_fee_authorization(fee_authorization, None, rng)?;
+
+// Create owner signature
+use snarkvm_console::program::ProgramOwner;
+let owner = ProgramOwner::new(&private_key, deployment_id, rng)?;
+
+// Construct final transaction
+let transaction = Transaction::from_deployment(owner, deployment, fee)?;
+```
+
+</Steps>
+
+## Deploying with Imports
+
+Ensure imported programs are deployed first:
+
+```rust
+// Deploy dependency first
+let dependency = Program::<CurrentNetwork>::from_str(r"
+program math.aleo;
+
+function add:
+    input r0 as u32.public;
+    input r1 as u32.public;
+    add r0 r1 into r2;
+    output r2 as u32.public;
+")?;
+
+let dep_tx = vm.deploy(&private_key, &dependency, fee_record_1, 0, None, rng)?;
+
+// Deploy main program with import
+let main_program = Program::<CurrentNetwork>::from_str(r"
+import math.aleo;
+
+program calculator.aleo;
+
+function compute:
+    input r0 as u32.public;
+    input r1 as u32.public;
+    call math.aleo/add r0 r1 into r2;
+    output r2 as u32.public;
+")?;
+
+let main_tx = vm.deploy(&private_key, &main_program, fee_record_2, 0, None, rng)?;
+```
+
+## Checking Deployment Status
+
+Check if a program is already deployed:
+
+```rust
+use snarkvm_console::program::ProgramID;
+
+let program_id = ProgramID::<CurrentNetwork>::from_str("hello.aleo")?;
+
+if vm.contains_program(&program_id) {
+    println!("Program {} is already deployed", program_id);
+} else {
+    println!("Program {} is not deployed", program_id);
+}
+```
+
+## Deployment Best Practices
+
+### Test Locally First
+
+Test your program thoroughly before deploying:
+
+```rust
+// Execute functions locally
+let inputs = [Value::from_str("42u32")?];
+
+let transaction = vm.execute(
+    &private_key,
+    (program.id(), "main"),
+    inputs.iter(),
+    None,
+    0,
+    None,
+    rng,
+)?;
+
+println!("Function executed successfully");
+```
+
+### Optimize Program Size
+
+Minimize deployment costs by:
+
+- Removing unnecessary functions
+- Simplifying complex logic
+- Using efficient data structures
+- Avoiding redundant computations
+
+### Version Control
+
+Maintain program versions:
+
+```rust
+// Document program versions
+let versions = vec![
+    ("hello.aleo", 0, "Initial release"),
+    ("hello.aleo", 1, "Added validation"),
+    ("hello.aleo", 2, "Performance improvements"),
+];
+
+for (program_id, edition, description) in versions {
+    println!("{}@{}: {}", program_id, edition, description);
+}
+```
+
+### Monitor Deployment Costs
+
+Track costs over time:
+
+```rust
+use std::collections::HashMap;
+
+struct DeploymentTracker {
+    costs: HashMap<String, u64>,
+}
+
+impl DeploymentTracker {
+    fn record_deployment(&mut self, program_id: String, cost: u64) {
+        self.costs.insert(program_id, cost);
+    }
+
+    fn total_spent(&self) -> u64 {
+        self.costs.values().sum()
+    }
+}
+```
+
+## Error Recovery
+
+Handle deployment transaction failures:
+
+```rust
+fn deploy_with_retry(
+    vm: &VM<CurrentNetwork, impl ConsensusStorage<CurrentNetwork>>,
+    private_key: &PrivateKey<CurrentNetwork>,
+    program: &Program<CurrentNetwork>,
+    max_retries: usize,
+) -> Result<Transaction<CurrentNetwork>> {
+    let mut attempts = 0;
+    
+    loop {
+        attempts += 1;
+        
+        match vm.deploy(private_key, program, None, 0, None, &mut thread_rng()) {
+            Ok(tx) => return Ok(tx),
+            Err(e) if attempts < max_retries => {
+                eprintln!("Deployment attempt {} failed: {}", attempts, e);
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                continue;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+```
+
+## Next Steps
+
+- Learn about [executing transactions](/guides/executing-transactions) with your deployed programs
+- Explore [creating programs](/guides/creating-programs) to write more complex logic
+- Understand [managing records](/guides/managing-records) created by your programs

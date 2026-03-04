@@ -1,0 +1,559 @@
+---
+title: Storage Modes
+description: Different storage modes and their use cases in SnarkVM
+---
+
+## Overview
+
+SnarkVM uses the `aleo-std` storage abstraction layer to support multiple storage backends. Understanding storage modes is crucial for optimizing performance, managing disk usage, and ensuring data persistence across different deployment scenarios.
+
+## Storage Mode Types
+
+SnarkVM supports three primary storage modes through the `StorageMode` enum:
+
+### Production Mode
+
+Persistent storage using RocksDB, suitable for production deployments.
+
+```rust
+use aleo_std::StorageMode;
+
+// Production storage in default location
+let storage = StorageMode::Production;
+
+// Default paths:
+// - Linux: ~/.aleo/storage/ledger-{network_id}/
+// - macOS: ~/Library/Application Support/Aleo/storage/ledger-{network_id}/
+// - Windows: ~\AppData\Roaming\Aleo\storage\ledger-{network_id}\
+```
+
+**Characteristics:**
+- Persistent across restarts
+- RocksDB-backed for durability
+- Optimized for production workloads
+- Automatic directory creation
+- Network ID-specific paths
+
+**Use Cases:**
+- Validator nodes
+- Full nodes
+- Production applications
+- Long-running services
+
+### Development Mode
+
+In-memory storage with optional persistence, ideal for testing and development.
+
+```rust
+// Development storage (in-memory)
+let storage = StorageMode::Development(0);
+
+// Multiple isolated instances
+let storage_1 = StorageMode::Development(1);
+let storage_2 = StorageMode::Development(2);
+
+// With persistence to temp directory
+let storage = StorageMode::Development(instance_id);
+```
+
+**Characteristics:**
+- Fast in-memory operations
+- Isolated by instance ID
+- Optional temp directory persistence
+- Automatically cleaned up
+- No network ID requirements
+
+**Use Cases:**
+- Unit tests
+- Integration tests
+- Local development
+- Rapid prototyping
+- CI/CD pipelines
+
+### Custom Mode
+
+User-specified storage path for advanced configurations.
+
+```rust
+use std::path::PathBuf;
+
+// Custom storage path
+let custom_path = PathBuf::from("/mnt/ssd/aleo/ledger");
+let storage = StorageMode::Custom(custom_path);
+
+// Relative paths supported
+let storage = StorageMode::Custom("./data/ledger".into());
+```
+
+**Characteristics:**
+- User-defined storage location
+- Full control over path
+- RocksDB-backed
+- Supports any valid filesystem path
+- No automatic cleanup
+
+**Use Cases:**
+- Custom deployment configurations
+- Specific disk/volume requirements
+- Network attached storage (NAS)
+- Cloud storage volumes
+- Multi-node setups
+
+## Storage Initialization
+
+### Opening a Ledger
+
+```rust
+use snarkvm::prelude::*;
+use aleo_std::StorageMode;
+
+// Load ledger with specific storage mode
+let genesis = Block::<MainnetV0>::genesis();
+let storage = StorageMode::Production;
+
+let ledger = Ledger::<MainnetV0, ConsensusStore<_, _>>::load(
+    genesis,
+    storage,
+)?;
+```
+
+### Opening a Store
+
+```rust
+use snarkvm_ledger_store::ConsensusStore;
+
+// Open store directly
+let store = ConsensusStore::<MainnetV0, ConsensusStorage<_>>::open(
+    StorageMode::Production
+)?;
+```
+
+### Storage Mode Conversion
+
+Storage modes implement `Into<StorageMode>` for convenience:
+
+```rust
+// String paths are automatically converted
+let store = ConsensusStore::open("/path/to/storage")?;
+
+// PathBuf conversion
+let path = PathBuf::from("/custom/path");
+let store = ConsensusStore::open(path)?;
+
+// Numeric IDs for development
+let store = ConsensusStore::open(0)?;  // Development(0)
+```
+
+## Storage Components
+
+SnarkVM's ledger uses multiple storage components:
+
+### Block Store
+
+Stores block data, headers, and metadata.
+
+```rust
+use snarkvm_ledger_store::BlockStore;
+
+// Open block store
+let block_store = BlockStore::<MainnetV0, BlockDB<_>>::open(
+    StorageMode::Production
+)?;
+
+// Access storage mode
+let mode = block_store.storage_mode();
+```
+
+### Transaction Store
+
+Manages transaction data and indices.
+
+```rust
+use snarkvm_ledger_store::TransactionStore;
+
+// Stores transitions, inputs, outputs
+let tx_store = TransactionStore::<_, TransitionDB<_>>::open(
+    StorageMode::Production
+)?;
+```
+
+### Program Store
+
+Stores deployed programs and their state.
+
+```rust
+use snarkvm_synthesizer::store::ProgramStore;
+
+// Program storage
+let program_store = ProgramStore::<MainnetV0, ProgramDB<_>>::open(
+    StorageMode::Production
+)?;
+```
+
+## Performance Characteristics
+
+### In-Memory (Development)
+
+**Advantages:**
+- Fastest read/write operations
+- No disk I/O overhead
+- Deterministic test behavior
+- Easy cleanup
+
+**Limitations:**
+- Limited by available RAM
+- Data lost on restart
+- Not suitable for large datasets
+- No durability guarantees
+
+**Typical Performance:**
+- Read latency: &lt;1μs
+- Write latency: &lt;10μs
+- Throughput: Memory bandwidth limited
+
+### RocksDB (Production/Custom)
+
+**Advantages:**
+- Persistent and durable
+- Scales to large datasets
+- Built-in compression
+- Background compaction
+- Crash recovery
+
+**Limitations:**
+- Slower than in-memory
+- Disk I/O dependent
+- Requires more configuration
+- Compaction overhead
+
+**Typical Performance:**
+- Read latency: 10-100μs (with cache)
+- Write latency: 50-500μs
+- Throughput: Disk-dependent (NVMe: 100K+ ops/sec)
+
+## Configuration Examples
+
+### Production Validator
+
+```rust
+use snarkvm::prelude::*;
+use aleo_std::StorageMode;
+
+// High-performance production setup
+let storage = if let Ok(custom_path) = std::env::var("ALEO_LEDGER_PATH") {
+    StorageMode::Custom(custom_path.into())
+} else {
+    StorageMode::Production
+};
+
+let ledger = Ledger::<MainnetV0, ConsensusStore<_, _>>::load(
+    genesis_block,
+    storage,
+)?;
+```
+
+### Test Suite
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aleo_std::StorageMode;
+
+    #[test]
+    fn test_ledger_operations() {
+        // Isolated test storage
+        let test_id = 12345;
+        let storage = StorageMode::Development(test_id);
+
+        let ledger = Ledger::<TestnetV0, ConsensusStore<_, _>>::load(
+            genesis,
+            storage,
+        ).unwrap();
+
+        // Test operations
+        // ...
+
+        // Automatic cleanup on drop
+    }
+
+    #[test]
+    fn test_parallel_ledgers() {
+        // Multiple isolated instances
+        let ledger1 = create_ledger(StorageMode::Development(1));
+        let ledger2 = create_ledger(StorageMode::Development(2));
+
+        // No interference between tests
+    }
+}
+```
+
+### Multi-Instance Deployment
+
+```rust
+// Separate storage for each network
+struct NodeConfig {
+    network: NetworkType,
+    storage_root: PathBuf,
+}
+
+impl NodeConfig {
+    fn storage_mode(&self) -> StorageMode {
+        let path = self.storage_root.join(format!("ledger-{}", self.network.id()));
+        StorageMode::Custom(path)
+    }
+}
+
+// Deploy multiple networks on same machine
+let mainnet_config = NodeConfig {
+    network: NetworkType::Mainnet,
+    storage_root: "/data/aleo/mainnet".into(),
+};
+
+let testnet_config = NodeConfig {
+    network: NetworkType::Testnet,
+    storage_root: "/data/aleo/testnet".into(),
+};
+```
+
+## Storage Backend Selection
+
+Choose the appropriate storage backend using feature flags:
+
+### RocksDB Backend
+
+Enable with the `rocks` feature:
+
+```toml Cargo.toml
+[dependencies]
+snarkvm = { version = "4.4.0", features = ["rocks"] }
+```
+
+**RocksDB Features:**
+- Production-ready persistence
+- ACID transactions
+- Automatic compression (Snappy/LZ4)
+- Background compaction
+- Write-ahead logging (WAL)
+
+### Memory Backend
+
+Default for development and testing:
+
+```toml Cargo.toml
+[dependencies]
+snarkvm = { version = "4.4.0", default-features = true }
+```
+
+**Memory Features:**
+- BTreeMap-based storage
+- In-process only
+- Fastest for small datasets
+- Optional temp persistence
+
+## Storage Maintenance
+
+### Checking Storage Size
+
+```rust
+use aleo_std::aleo_ledger_dir;
+
+// Get storage directory
+let storage_path = aleo_ledger_dir(MainnetV0::ID, &StorageMode::Production);
+
+// Calculate size
+fn directory_size(path: &Path) -> u64 {
+    walkdir::WalkDir::new(path)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .filter_map(|e| e.metadata().ok())
+        .map(|m| m.len())
+        .sum()
+}
+
+let size_bytes = directory_size(&storage_path);
+println!("Ledger storage: {} GB", size_bytes / 1_000_000_000);
+```
+
+### Backup and Recovery
+
+```bash
+# Backup ledger (RocksDB)
+# Stop the node first!
+sudo systemctl stop aleo-node
+
+# Create backup
+tar -czf aleo-ledger-backup-$(date +%Y%m%d).tar.gz \
+    ~/.aleo/storage/ledger-0/
+
+# Restart node
+sudo systemctl start aleo-node
+
+# Recovery
+tar -xzf aleo-ledger-backup-20240101.tar.gz -C ~/.aleo/storage/
+```
+
+### Cleanup
+
+```rust
+use aleo_std::aleo_ledger_dir;
+
+// Remove ledger storage
+fn remove_ledger(network_id: u16, storage_mode: &StorageMode) -> Result<()> {
+    let path = aleo_ledger_dir(network_id, storage_mode);
+    if path.exists() {
+        std::fs::remove_dir_all(path)?;
+    }
+    Ok(())
+}
+
+// Clean development storage
+remove_ledger(TestnetV0::ID, &StorageMode::Development(0))?;
+```
+
+## Advanced Configuration
+
+### Storage Mode Helper
+
+Get the storage directory path:
+
+```rust
+use aleo_std::aleo_ledger_dir;
+
+let path = aleo_ledger_dir(MainnetV0::ID, &StorageMode::Production);
+println!("Storage path: {:?}", path);
+```
+
+### Test Storage Isolation
+
+```rust
+use aleo_std::StorageMode;
+
+// Generate unique test IDs
+fn test_storage(test_name: &str) -> StorageMode {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+    test_name.hash(&mut hasher);
+    let test_id = hasher.finish() as u32;
+
+    StorageMode::Development(test_id)
+}
+
+// Use in tests
+#[test]
+fn test_specific_feature() {
+    let storage = test_storage("test_specific_feature");
+    // ...
+}
+```
+
+### Custom Storage Traits
+
+Implement storage traits for custom backends:
+
+```rust
+use snarkvm_ledger_store::helpers::{Map, MapRead};
+
+// Custom storage must implement Map trait
+struct CustomStorage<K, V> {
+    // Your storage implementation
+}
+
+impl<K, V> Map<K, V> for CustomStorage<K, V> {
+    fn insert(&self, key: K, value: V) -> Result<()> {
+        // Custom insertion logic
+    }
+
+    fn remove(&self, key: &K) -> Result<()> {
+        // Custom removal logic
+    }
+
+    // ... implement remaining trait methods
+}
+```
+
+## Troubleshooting
+
+### Permission Errors
+
+```bash
+# Fix ownership
+chown -R $USER:$USER ~/.aleo/storage/
+
+# Fix permissions
+chmod -R 755 ~/.aleo/storage/
+```
+
+### Disk Space Issues
+
+<Warning>
+  Mainnet ledger can exceed 100GB. Ensure adequate disk space before syncing.
+</Warning>
+
+```bash
+# Check available space
+df -h ~/.aleo/storage/
+
+# Monitor growth
+watch -n 60 du -sh ~/.aleo/storage/ledger-0/
+```
+
+### Corrupted Storage
+
+If storage becomes corrupted:
+
+```bash
+# 1. Stop the node
+sudo systemctl stop aleo-node
+
+# 2. Backup current state (if possible)
+mv ~/.aleo/storage/ledger-0 ~/.aleo/storage/ledger-0.corrupted
+
+# 3. Restore from backup or resync
+# Restore:
+tar -xzf backup.tar.gz -C ~/.aleo/storage/
+# Or resync from genesis (will take time)
+sudo systemctl start aleo-node
+```
+
+### Performance Issues
+
+```rust
+// Profile storage operations
+use aleo_std::prelude::*;
+
+let timer = timer!("Storage operation");
+// ... perform operation
+lap!(timer);
+println!("Duration: {}", finish!(timer));
+```
+
+## Best Practices
+
+### Development
+
+- Use `Development` mode for all tests
+- Generate unique test IDs to avoid conflicts
+- Avoid persistent storage in CI/CD
+
+### Production
+
+- Use `Production` or `Custom` mode
+- Mount ledger storage on fast SSD/NVMe
+- Monitor disk usage and I/O
+- Implement regular backups
+- Plan for growth (10-20GB/month typical)
+
+### Testing
+
+- Use deterministic test IDs for reproducibility
+- Clean up storage in test teardown if needed
+- Use `Development` mode to avoid filesystem overhead
+
+## Related Topics
+
+- [Custom Networks](/advanced/custom-networks) - Configure storage for custom networks
+- [CUDA Acceleration](/advanced/cuda-acceleration) - Optimize computation performance

@@ -1,0 +1,193 @@
+---
+title: Synthesizer Overview
+description: Overview of the snarkVM synthesizer crate for program execution and proof generation
+---
+
+## Overview
+
+The synthesizer is the core execution engine of snarkVM that handles program deployment, execution, and zero-knowledge proof generation for the Aleo blockchain. It bridges the gap between high-level Aleo programs and low-level cryptographic proofs.
+
+## Architecture
+
+The synthesizer crate consists of three main sub-crates:
+
+### Process
+
+The process module manages program compilation and execution:
+
+- **Process**: Top-level execution coordinator that manages stacks and the universal SRS
+- **Stack**: Program-specific execution context containing register types, proving/verifying keys
+- **Trace**: Records execution history and generates proofs
+- **Authorization**: Encapsulates authorized function calls
+
+See [Process API](/api/synthesizer/process) for details.
+
+### Program
+
+The program module defines Aleo program structures:
+
+- **Program**: Container for functions, closures, structs, records, and mappings
+- **Function**: Executable program function with inputs, outputs, and optional finalize logic
+- **Closure**: Reusable code block without state access
+- **Instruction**: Individual operation (add, mul, hash, call, etc.)
+- **Finalize**: On-chain state transition logic
+
+See [Program API](/api/synthesizer/program) for details.
+
+### VM
+
+The VM module provides the highest-level interface:
+
+- **VM**: Virtual machine for executing transactions and managing blockchain state
+- Handles deployment, execution, and verification of transactions
+- Manages consensus storage and finalization
+
+See [VM API](/api/synthesizer/vm) for details.
+
+## Key Concepts
+
+### Authorization
+
+Before execution, function calls must be authorized with a private key. Authorization creates a signed request that proves ownership without revealing the private key.
+
+```rust
+let authorization = vm.authorize(
+    &private_key,
+    "program.aleo",
+    "function_name",
+    inputs,
+    rng,
+)?;
+```
+
+### Execution
+
+Execution runs the authorized function and generates zero-knowledge proofs:
+
+```rust
+let transaction = vm.execute(
+    &private_key,
+    ("program.aleo", "transfer_private"),
+    inputs,
+    fee_record,
+    priority_fee,
+    query,
+    rng,
+)?;
+```
+
+### Deployment
+
+Programs must be deployed before execution:
+
+```rust
+let transaction = vm.deploy(
+    &private_key,
+    &program,
+    fee_record,
+    priority_fee,
+    query,
+    rng,
+)?;
+```
+
+### Finalization
+
+After execution produces transitions, finalization updates on-chain state:
+
+```rust
+vm.finalize(
+    state,
+    ratifications,
+    solutions,
+    transactions,
+)?;
+```
+
+## Type Parameters
+
+Most synthesizer types are generic over:
+
+- `N: Network` - The Aleo network (MainnetV0, TestnetV0, etc.)
+- `C: ConsensusStorage<N>` - Storage backend for VM state
+
+## Consensus Versions
+
+The synthesizer supports multiple consensus versions for network upgrades. Different versions may change:
+
+- Proof system parameters (Varuna V1 vs V2)
+- Program validation rules
+- Fee calculation methods
+- Record formats
+
+The current consensus version is determined by block height:
+
+```rust
+let version = N::CONSENSUS_VERSION(block_height)?;
+```
+
+## Error Handling
+
+The synthesizer uses specialized error types:
+
+- `VmAuthError` - Authorization failures
+- `VmExecError` - Execution failures
+- `VmDeployError` - Deployment failures
+- `ProcessExecError` - Process-level execution errors
+
+These provide detailed context about failures in different parts of the pipeline.
+
+## Performance Considerations
+
+### Parallel Execution
+
+The synthesizer uses Rayon for parallel execution when the `serial` feature is disabled:
+
+```rust
+#[cfg(not(feature = "serial"))]
+use rayon::prelude::*;
+```
+
+### Circuit Caching
+
+Proving and verifying keys are cached in the Stack to avoid recomputation:
+
+```rust
+pub struct Stack<N: Network> {
+    proving_keys: Arc<RwLock<IndexMap<Identifier<N>, ProvingKey<N>>>>,
+    verifying_keys: Arc<RwLock<IndexMap<Identifier<N>, VerifyingKey<N>>>>,
+    // ...
+}
+```
+
+### Universal SRS
+
+The Universal Structured Reference String is shared across all programs:
+
+```rust
+pub struct Process<N: Network> {
+    universal_srs: UniversalSRS<N>,
+    // ...
+}
+```
+
+## Testing
+
+Synthesizer tests are slow due to proof generation. Run specific tests:
+
+```bash
+cargo test -p snarkvm-synthesizer -- test_name
+```
+
+For integration tests, use the test features:
+
+```bash
+cargo test -p snarkvm-synthesizer --features test,dev_println
+```
+
+## Related Modules
+
+- [Console](/api/console) - Program types and cryptographic primitives
+- [Circuit](/api/circuit) - Circuit equivalents for constraint generation
+- [Ledger](/api/ledger) - Blockchain state and storage
+- [Algorithms](/api/algorithms) - Cryptographic algorithms (Poseidon, Marlin, etc.)

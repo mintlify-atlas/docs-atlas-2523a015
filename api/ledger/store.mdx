@@ -1,0 +1,541 @@
+---
+title: Storage and Consensus Store
+description: Persistent storage layer for blockchain state
+---
+
+The storage layer provides persistent state management for the ledger, supporting both in-memory and disk-based storage backends.
+
+## ConsensusStorage Trait
+
+The `ConsensusStorage` trait defines the interface for storage backends.
+
+```rust
+pub trait ConsensusStorage<N: Network>: 'static + Clone + Send + Sync {
+    type FinalizeStorage: FinalizeStorage<N>;
+    type BlockStorage: BlockStorage<N>;
+    type TransactionStorage: TransactionStorage<N>;
+    type TransitionStorage: TransitionStorage<N>;
+
+    fn open<S: Into<StorageMode>>(storage: S) -> Result<Self>;
+    
+    fn finalize_store(&self) -> &FinalizeStore<N, Self::FinalizeStorage>;
+    fn block_store(&self) -> &BlockStore<N, Self::BlockStorage>;
+    fn transaction_store(&self) -> &TransactionStore<N, Self::TransactionStorage>;
+    fn transition_store(&self) -> &TransitionStore<N, Self::TransitionStorage>;
+    
+    fn storage_mode(&self) -> &StorageMode;
+}
+```
+
+### Storage Components
+
+The consensus storage is divided into four specialized stores:
+
+1. **FinalizeStore**: Manages finalize state (mappings, committee, etc.)
+2. **BlockStore**: Stores blocks, headers, and state roots
+3. **TransactionStore**: Indexes transactions by various keys
+4. **TransitionStore**: Indexes transitions, inputs, and outputs
+
+## ConsensusStore
+
+The `ConsensusStore` wraps a `ConsensusStorage` implementation.
+
+```rust
+pub struct ConsensusStore<N: Network, C: ConsensusStorage<N>> {
+    storage: C,
+    _phantom: PhantomData<N>,
+}
+```
+
+### Opening a Store
+
+```rust
+pub fn open<S: Into<StorageMode>>(storage: S) -> Result<Self>
+```
+
+**Example:**
+
+```rust
+use snarkvm_ledger::store::ConsensusStore;
+use snarkvm_ledger::store::helpers::memory::ConsensusMemory;
+use aleo_std::StorageMode;
+
+type CurrentNetwork = console::network::MainnetV0;
+
+// Open an in-memory store
+let store = ConsensusStore::<CurrentNetwork, ConsensusMemory<_>>::open(
+    StorageMode::Development(0)
+)?;
+
+// Open a RocksDB store
+let store = ConsensusStore::<CurrentNetwork, ConsensusDB<_>>::open(
+    StorageMode::Production
+)?;
+```
+
+### Accessing Substores
+
+```rust
+// Access individual stores
+pub fn finalize_store(&self) -> &FinalizeStore<N, C::FinalizeStorage>
+pub fn block_store(&self) -> &BlockStore<N, C::BlockStorage>
+pub fn transaction_store(&self) -> &TransactionStore<N, C::TransactionStorage>
+pub fn transition_store(&self) -> &TransitionStore<N, C::TransitionStorage>
+
+// Get storage mode
+pub fn storage_mode(&self) -> &StorageMode
+```
+
+## Storage Modes
+
+The `StorageMode` enum from `aleo-std` configures storage behavior.
+
+```rust
+pub enum StorageMode {
+    Development(u16),
+    Production,
+    Custom(PathBuf),
+}
+```
+
+### Development Mode
+
+```rust
+let storage = StorageMode::Development(0);
+```
+
+- Uses in-memory storage (no disk persistence)
+- Fast setup and teardown
+- Ideal for testing and development
+- The `u16` parameter allows multiple independent stores
+
+**Use cases:**
+- Unit tests
+- Integration tests
+- Temporary chains for testing
+
+### Production Mode
+
+```rust
+let storage = StorageMode::Production;
+```
+
+- Uses RocksDB for persistent storage
+- Stores data in the default platform-specific directory:
+  - Linux: `~/.aleo/storage/`
+  - macOS: `~/Library/Application Support/Aleo/storage/`
+  - Windows: `%APPDATA%\Aleo\storage\`
+- Optimized for performance and durability
+
+**Use cases:**
+- Validator nodes
+- Full nodes
+- Production deployments
+
+### Custom Mode
+
+```rust
+let storage = StorageMode::Custom("/custom/path/to/storage".into());
+```
+
+- Uses RocksDB at a custom path
+- Full control over storage location
+- Useful for multi-instance setups
+
+**Use cases:**
+- Multiple nodes on same machine
+- Custom data directories
+- Containerized deployments
+
+## Atomic Operations
+
+The consensus store supports atomic batch operations for consistency.
+
+### Starting an Atomic Batch
+
+```rust
+pub fn start_atomic(&self)
+```
+
+Begins an atomic write batch across all substores. All subsequent write operations are buffered until `finish_atomic` is called.
+
+### Checking Atomic State
+
+```rust
+pub fn is_atomic_in_progress(&self) -> bool
+```
+
+Returns `true` if an atomic batch is currently in progress.
+
+### Checkpointing
+
+```rust
+pub fn atomic_checkpoint(&self)
+```
+
+Creates a checkpoint within the current atomic batch. You can rewind to the most recent checkpoint using `atomic_rewind`.
+
+### Clearing Checkpoints
+
+```rust
+pub fn clear_latest_checkpoint(&self)
+```
+
+Removes the most recent checkpoint. After this, `atomic_rewind` will rewind to the previous checkpoint (if any).
+
+### Rewinding
+
+```rust
+pub fn atomic_rewind(&self)
+```
+
+Reverts all operations since the last checkpoint. The atomic batch remains in progress.
+
+### Aborting
+
+```rust
+pub fn abort_atomic(&self)
+```
+
+Discards all buffered operations and exits atomic mode. No changes are written to storage.
+
+### Finishing
+
+```rust
+pub fn finish_atomic(&self) -> Result<()>
+```
+
+Commits all buffered operations to storage atomically. Either all operations succeed, or all are rolled back.
+
+### Atomic Batch Example
+
+```rust
+use snarkvm_ledger::store::ConsensusStore;
+
+// Start atomic batch
+store.start_atomic();
+
+try {
+    // Perform multiple operations
+    store.block_store().insert_block(&block1)?;
+    
+    // Create a checkpoint
+    store.atomic_checkpoint();
+    
+    store.block_store().insert_block(&block2)?;
+    
+    // If block3 fails, rewind to checkpoint (block2 is discarded)
+    if let Err(e) = store.block_store().insert_block(&block3) {
+        store.atomic_rewind();
+        // Try alternative block
+        store.block_store().insert_block(&alternative_block)?;
+    }
+    
+    // Commit all changes atomically
+    store.finish_atomic()?;
+} catch {
+    // On error, abort the entire batch
+    store.abort_atomic();
+    return Err(e);
+}
+```
+
+## Atomic Batch Macros
+
+The store provides helper macros for common atomic patterns.
+
+### `atomic_batch_scope!`
+
+Executes a block of operations atomically, handling nested atomic scopes.
+
+```rust
+use snarkvm_ledger::atomic_batch_scope;
+
+atomic_batch_scope!(store, {
+    // These operations execute atomically
+    store.block_store().insert_block(&block)?;
+    store.transaction_store().insert_transaction(&tx)?;
+    
+    // Nested atomic scope (creates a checkpoint)
+    atomic_batch_scope!(store, {
+        store.transition_store().insert_transition(&transition)?;
+        Ok(())
+    })?;
+    
+    Ok(result)
+})?
+```
+
+**Behavior:**
+- If not in an atomic batch, starts one and commits on success
+- If already in an atomic batch, creates a checkpoint
+- On error, rewinds or aborts depending on nesting level
+- Returns the result of the closure
+
+### `atomic_finalize!`
+
+Executes finalize operations with support for real and dry runs.
+
+```rust
+use snarkvm_ledger::atomic_finalize;
+use snarkvm_ledger::store::FinalizeMode;
+
+atomic_finalize!(store, FinalizeMode::RealRun, {
+    // Finalize operations here
+    finalize_store.apply_operations(&operations)?;
+    Ok(result)
+})?
+```
+
+**Modes:**
+- `FinalizeMode::RealRun`: Commits changes to storage
+- `FinalizeMode::DryRun`: Discards changes (for speculation)
+
+## FinalizeStore
+
+Manages on-chain state including programs, mappings, and the committee.
+
+### Key Components
+
+```rust
+impl<N: Network, F: FinalizeStorage<N>> FinalizeStore<N, F> {
+    // Program management
+    pub fn contains_program(&self, program_id: &ProgramID<N>) -> Result<bool>
+    pub fn get_program(&self, program_id: &ProgramID<N>) -> Result<Option<Program<N>>>
+    
+    // Mapping management
+    pub fn get_value(
+        &self,
+        program_id: &ProgramID<N>,
+        mapping_name: &Identifier<N>,
+        key: &Plaintext<N>,
+    ) -> Result<Option<Value<N>>>
+    
+    // Committee management
+    pub fn committee_store(&self) -> &CommitteeStore<N, F::CommitteeStorage>
+}
+```
+
+## BlockStore
+
+Stores blocks and manages the block tree.
+
+### Key Operations
+
+```rust
+impl<N: Network, B: BlockStorage<N>> BlockStore<N, B> {
+    // Block access
+    pub fn get_block(&self, block_height: u32) -> Result<Option<Block<N>>>
+    pub fn contains_block_hash(&self, block_hash: &N::BlockHash) -> Result<bool>
+    
+    // State roots
+    pub fn get_state_root(&self, block_height: u32) -> Result<Option<N::StateRoot>>
+    pub fn current_state_root(&self) -> N::StateRoot
+    
+    // Block tree
+    pub fn current_block_height(&self) -> u32
+    pub fn max_height(&self) -> Option<u32>
+    pub fn get_block_tree_root(&self) -> N::StateRoot
+    
+    // State paths (for SNARKs)
+    pub fn get_state_path_for_commitment(
+        &self,
+        commitment: &Field<N>,
+    ) -> Result<StatePath<N>>
+}
+```
+
+### Block Tree
+
+The block store maintains a Merkle tree of all blocks for efficient state proofs.
+
+```rust
+// Get the root of the block tree
+let tree_root = block_store.get_block_tree_root();
+
+// Get a state path proving a commitment is in the tree
+let state_path = block_store.get_state_path_for_commitment(&commitment)?;
+
+// Verify the path
+assert!(state_path.verify(&tree_root, &commitment));
+```
+
+## TransactionStore
+
+Indexes transactions for efficient lookup.
+
+```rust
+impl<N: Network, T: TransactionStorage<N>> TransactionStore<N, T> {
+    // Transaction lookup
+    pub fn contains_transaction_id(&self, tx_id: &N::TransactionID) -> Result<bool>
+    pub fn get_transaction(&self, tx_id: &N::TransactionID) 
+        -> Result<Option<Transaction<N>>>
+    
+    // Deployment lookup
+    pub fn get_deployment(&self, program_id: &ProgramID<N>) 
+        -> Result<Option<Deployment<N>>>
+    
+    // Fee lookup
+    pub fn get_fee(&self, tx_id: &N::TransactionID) -> Result<Option<Fee<N>>>
+}
+```
+
+## TransitionStore
+
+Indexes transitions and their inputs/outputs.
+
+```rust
+impl<N: Network, T: TransitionStorage<N>> TransitionStore<N, T> {
+    // Transition lookup
+    pub fn contains_transition_id(&self, transition_id: &N::TransitionID) 
+        -> Result<bool>
+    pub fn get_transition(&self, transition_id: &N::TransitionID) 
+        -> Result<Option<Transition<N>>>
+    
+    // Input/output indexes
+    pub fn contains_input_id(&self, input_id: &Field<N>) -> Result<bool>
+    pub fn contains_output_id(&self, output_id: &Field<N>) -> Result<bool>
+    pub fn contains_serial_number(&self, serial_number: &Field<N>) -> Result<bool>
+    pub fn contains_commitment(&self, commitment: &Field<N>) -> Result<bool>
+    
+    // Lookups
+    pub fn get_input(&self, input_id: &Field<N>) -> Result<Option<Input<N>>>
+    pub fn get_output(&self, output_id: &Field<N>) -> Result<Option<Output<N>>>
+}
+```
+
+## Storage Implementations
+
+SnarkVM provides two built-in storage implementations:
+
+### MemoryStorage
+
+In-memory storage backed by `IndexMap`.
+
+```rust
+use snarkvm_ledger::store::helpers::memory::ConsensusMemory;
+
+type Store<N> = ConsensusStore<N, ConsensusMemory<N>>;
+```
+
+**Characteristics:**
+- Fast read/write operations
+- No disk I/O
+- Data lost on restart
+- Used for Development mode
+
+### RocksDBStorage
+
+Persistent storage backed by RocksDB.
+
+```rust
+#[cfg(feature = "rocks")]
+use snarkvm_ledger::store::helpers::rocksdb::ConsensusDB;
+
+type Store<N> = ConsensusStore<N, ConsensusDB<N>>;
+```
+
+**Characteristics:**
+- Persistent across restarts
+- Optimized for SSD storage
+- Supports atomic operations via write batches
+- Used for Production and Custom modes
+
+**RocksDB Features:**
+- Point lookups via Bloom filters
+- Range scans via LSM tree
+- Compression (Snappy by default)
+- Background compaction
+- Write-ahead log for durability
+
+## Performance Considerations
+
+### Block Cache
+
+The block store supports an optional LRU cache for frequently accessed blocks:
+
+```rust
+// Enable block cache with 100 blocks
+let cache_size = Some(100);
+let block_store = BlockStore::open_with_cache(storage, cache_size)?;
+
+// Check cache configuration
+if let Some(size) = block_store.cache_size() {
+    println!("Block cache enabled with {} slots", size);
+}
+```
+
+### Batch Operations
+
+For bulk operations, always use atomic batches to minimize write amplification:
+
+```rust
+// Bad: Individual writes
+for block in blocks {
+    store.block_store().insert_block(&block)?; // Many disk writes
+}
+
+// Good: Batched writes
+store.start_atomic();
+for block in blocks {
+    store.block_store().insert_block(&block)?; // Buffered
+}
+store.finish_atomic()?; // Single disk write
+```
+
+### Index Selection
+
+Choose the most efficient index for your query:
+
+```rust
+// Fast: Direct lookup by primary key
+let tx = store.transaction_store().get_transaction(&tx_id)?;
+
+// Slower: Lookup via secondary index
+let transition = store.transition_store().get_transition(&transition_id)?;
+let tx = store.transaction_store().find_transaction_for_transition(&transition_id)?;
+```
+
+## Example: Full Storage Workflow
+
+```rust
+use snarkvm_ledger::prelude::*;
+use aleo_std::StorageMode;
+
+// Open storage
+let store = ConsensusStore::open(StorageMode::Production)?;
+
+// Atomic block insertion
+store.start_atomic();
+
+try {
+    // Insert block
+    store.block_store().insert_block(&block)?;
+    
+    // Update finalize state
+    for operation in finalize_operations {
+        store.finalize_store().apply_operation(&operation)?;
+    }
+    
+    // Commit atomically
+    store.finish_atomic()?;
+} catch (e) {
+    // Rollback on error
+    store.abort_atomic();
+    return Err(e);
+}
+
+// Query the stored data
+let retrieved_block = store.block_store().get_block(block.height())?;
+assert_eq!(retrieved_block.unwrap(), block);
+
+// Get state proof
+let commitment = block.commitments().next().unwrap();
+let state_path = store.block_store().get_state_path_for_commitment(commitment)?;
+```
+
+## Next Steps
+
+- [Ledger Overview](/api/ledger/overview) - Main ledger operations
+- [Block Types](/api/ledger/block) - Block and transaction structures
+- [Query Operations](/api/ledger/query) - State querying interface

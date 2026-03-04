@@ -1,0 +1,234 @@
+---
+title: Creating Programs
+description: Learn how to create and compile Aleo programs using snarkVM
+---
+
+This guide walks through creating and compiling Aleo programs with snarkVM. Programs define the logic for zero-knowledge applications on the Aleo blockchain.
+
+## Program Structure
+
+Aleo programs are written in the Leo/Aleo language and define functions, mappings, and records. Here's a basic structure:
+
+```aleo
+program hello.aleo;
+
+mapping account:
+    key as address.public;
+    value as u64.public;
+
+record token:
+    owner as address.private;
+    amount as u64.private;
+
+function initialize:
+    input r0 as address.private;
+    input r1 as u64.private;
+    cast r0 r1 into r2 as token.record;
+    output r2 as token.record;
+```
+
+## Parsing Programs
+
+Use the `Program::from_str` method to parse program source code:
+
+```rust
+use snarkvm_synthesizer::Program;
+use snarkvm_console::network::MainnetV0;
+
+type CurrentNetwork = MainnetV0;
+
+let program_source = r"
+program testing.aleo;
+
+struct message:
+    amount as u128;
+
+mapping account:
+    key as address.public;
+    value as u64.public;
+
+record token:
+    owner as address.private;
+    amount as u64.private;
+
+function compute:
+    input r0 as message.private;
+    input r1 as u64.public;
+    add r0.amount r1 into r2;
+    output r2 as u128.public;
+";
+
+// Parse the program
+let program = Program::<CurrentNetwork>::from_str(program_source)?;
+```
+
+<Note>
+Program IDs must be unique on the network. Use a descriptive name followed by `.aleo`.
+</Note>
+
+## Validating Programs
+
+Once parsed, you can access program components:
+
+```rust
+// Get the program ID
+let program_id = program.id();
+println!("Program ID: {}", program_id);
+
+// Iterate over functions
+for (function_name, function) in program.functions() {
+    println!("Function: {}", function_name);
+}
+
+// Access mappings
+for (mapping_name, mapping) in program.mappings() {
+    println!("Mapping: {}", mapping_name);
+}
+```
+
+## Compiling Programs with the VM
+
+The VM compiles programs by generating proving and verifying keys:
+
+<Steps>
+
+### Initialize the VM
+
+```rust
+use snarkvm_synthesizer::VM;
+use snarkvm_ledger_store::ConsensusStore;
+use aleo_std::StorageMode;
+
+#[cfg(not(feature = "rocks"))]
+type ConsensusMemory = snarkvm_ledger_store::helpers::memory::ConsensusMemory<CurrentNetwork>;
+#[cfg(feature = "rocks")]
+type ConsensusDB = snarkvm_ledger_store::helpers::rocksdb::ConsensusDB<CurrentNetwork>;
+
+// Initialize storage
+let store = ConsensusStore::open(StorageMode::Production)?;
+
+// Create VM instance
+let vm = VM::from(store)?;
+```
+
+### Compile the Program
+
+The `deploy_raw` method generates cryptographic keys for the program:
+
+```rust
+use rand::thread_rng;
+
+let rng = &mut thread_rng();
+
+// Compile the program (generates keys)
+let deployment = vm.deploy_raw(&program, rng)?;
+
+println!("Program compiled successfully");
+println!("Deployment size: {} bytes", deployment.size_in_bytes());
+```
+
+### Access Verifying Keys
+
+After compilation, verifying keys are included in the deployment:
+
+```rust
+// Iterate over verifying keys
+for (function_name, (verifying_key, _)) in deployment.verifying_keys() {
+    println!("Function '{}' verifying key generated", function_name);
+    println!("  Circuit variables: {}", verifying_key.num_variables());
+}
+```
+
+</Steps>
+
+## Program Imports
+
+Programs can import other programs that are already deployed:
+
+```aleo
+import credits.aleo;
+
+program my_program.aleo;
+
+function transfer_wrapper:
+    input r0 as address.public;
+    input r1 as u64.public;
+    call credits.aleo/transfer_public r0 r1 into r2;
+    output r2 as credits.aleo/transfer_public.future;
+```
+
+<Note>
+Imported programs must be deployed to the network before your program can reference them.
+</Note>
+
+## Error Handling
+
+Common compilation errors:
+
+```rust
+match Program::<CurrentNetwork>::from_str(program_source) {
+    Ok(program) => {
+        println!("Program parsed successfully");
+    }
+    Err(e) => {
+        eprintln!("Parse error: {}", e);
+        // Handle specific errors:
+        // - Syntax errors in the program
+        // - Invalid types or operations
+        // - Duplicate definitions
+    }
+}
+```
+
+## Best Practices
+
+### Use Meaningful Names
+
+```aleo
+// Good: descriptive function names
+function calculate_reward:
+    input r0 as u64.public;
+    mul r0 100u64 into r1;
+    output r1 as u64.public;
+
+// Avoid: unclear abbreviations
+function calc_r:
+    input r0 as u64.public;
+    mul r0 100u64 into r1;
+    output r1 as u64.public;
+```
+
+### Document Complex Logic
+
+Include comments in your program source to explain complex operations, especially in finalize blocks.
+
+### Test Incrementally
+
+Start with simple functions and test them before adding complexity. Use the VM to execute test cases.
+
+### Optimize for Constraints
+
+Zero-knowledge proofs have computational costs. Minimize operations in functions to reduce proving time:
+
+- Avoid unnecessary multiplications
+- Use efficient data structures
+- Keep functions focused and modular
+
+## Program Editions
+
+Starting with consensus version V9, programs support editions for upgrades:
+
+```aleo
+program my_program.aleo;
+
+constructor:
+    assert.eq edition 1u16;
+```
+
+This allows deploying updated versions of programs while maintaining the same program ID.
+
+## Next Steps
+
+- Learn about [deploying programs](/guides/deploying-programs) to the network
+- Explore [executing transactions](/guides/executing-transactions) with your programs
+- Understand [managing records](/guides/managing-records) created by your programs

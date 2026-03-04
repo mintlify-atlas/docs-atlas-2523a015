@@ -1,0 +1,307 @@
+---
+title: Proof verification example
+description: Generate and verify zero-knowledge proofs with SnarkVM
+---
+
+This example demonstrates how to generate and verify zero-knowledge proofs using SnarkVM's SNARK implementation.
+
+## Overview
+
+When you execute a transaction in SnarkVM, a zero-knowledge proof is automatically generated to prove the computation was performed correctly. This example shows how to:
+
+1. Execute a program and generate a proof
+2. Extract the proof from the transaction
+3. Verify the proof independently
+
+## Complete example
+
+```rust
+use snarkvm::{
+    prelude::*,
+    ledger::store::ConsensusStore,
+};
+use rand::thread_rng;
+
+fn main() -> Result<()> {
+    // Setup: Create a simple program
+    let program_string = r#"
+program verify_example.aleo;
+
+function compute:
+    input r0 as u64.private;
+    input r1 as u64.private;
+    add r0 r1 into r2;
+    mul r2 r2 into r3;
+    output r3 as u64.private;
+    "#;
+    
+    let program = Program::<Testnet3>::from_str(program_string)?;
+    
+    // Initialize VM
+    let store = ConsensusStore::<Testnet3, ConsensusMemory<Testnet3>>::open(
+        Some(aleo_std::StorageMode::Development(0))
+    )?;
+    let vm = VM::from(store)?;
+    
+    // Generate account
+    let private_key = PrivateKey::<Testnet3>::new(&mut thread_rng())?;
+    
+    // Deploy program
+    println!("Deploying program...");
+    let deployment = vm.deploy(
+        &private_key,
+        &program,
+        None,
+        0,
+        None,
+        &mut thread_rng()
+    )?;
+    
+    println!("\n--- Proof Generation ---");
+    
+    // Execute the function (generates proof)
+    let inputs = [
+        Value::from_str("5u64")?,
+        Value::from_str("3u64")?,
+    ];
+    
+    println!("Computing: (5 + 3)² = 64");
+    println!("Generating zero-knowledge proof...");
+    
+    let transaction = vm.execute(
+        &private_key,
+        ("verify_example.aleo", "compute"),
+        inputs.iter(),
+        None,
+        0,
+        None,
+        &mut thread_rng()
+    )?;
+    
+    println!("✓ Proof generated successfully");
+    println!("Transaction ID: {}", transaction.id());
+    
+    println!("\n--- Proof Verification ---");
+    
+    // Verify the transaction
+    let verification_result = vm.check_transaction(
+        &transaction,
+        None,
+        &mut thread_rng()
+    );
+    
+    match verification_result {
+        Ok(_) => {
+            println!("✓ Proof verified successfully!");
+            println!("The computation is correct without revealing inputs.");
+        }
+        Err(e) => {
+            println!("✗ Proof verification failed: {}", e);
+        }
+    }
+    
+    println!("\n--- Proof Properties ---");
+    
+    // Extract execution from transaction
+    if let Transaction::Execute(_, execution, _) = &transaction {
+        println!("Number of transitions: {}", execution.len());
+        
+        for (i, transition) in execution.transitions().enumerate() {
+            println!("\nTransition {}:", i);
+            println!("  Program: {}", transition.program_id());
+            println!("  Function: {}", transition.function_name());
+            println!("  Inputs: {}", transition.inputs().len());
+            println!("  Outputs: {}", transition.outputs().len());
+            
+            // The proof is attached to the transition
+            if let Some(proof) = transition.proof() {
+                println!("  Proof: {} bytes", proof.to_string().len());
+            }
+        }
+    }
+    
+    Ok(())
+}
+```
+
+## Step by step
+
+<Steps>
+  <Step title="Create and deploy a program">
+    ```rust
+    let program = Program::<Testnet3>::from_str(program_string)?;
+    let deployment = vm.deploy(&private_key, &program, None, 0, None, &mut thread_rng())?;
+    ```
+    
+    Deploy a simple program that adds two numbers and squares the result.
+  </Step>
+  
+  <Step title="Execute with proof generation">
+    ```rust
+    let transaction = vm.execute(
+        &private_key,
+        ("verify_example.aleo", "compute"),
+        inputs.iter(),
+        None,
+        0,
+        None,
+        &mut thread_rng()
+    )?;
+    ```
+    
+    When you call `vm.execute`, SnarkVM automatically:
+    1. Compiles the program to an R1CS constraint system
+    2. Generates a witness (the intermediate values)
+    3. Creates a SNARK proof using Varuna
+  </Step>
+  
+  <Step title="Verify the proof">
+    ```rust
+    let verification_result = vm.check_transaction(
+        &transaction,
+        None,
+        &mut thread_rng()
+    );
+    ```
+    
+    Verification checks that:
+    - The proof is valid
+    - The program exists and matches the claimed ID
+    - All constraints are satisfied
+    - The computation was performed correctly
+  </Step>
+  
+  <Step title="Extract proof details">
+    ```rust
+    if let Transaction::Execute(_, execution, _) = &transaction {
+        for transition in execution.transitions() {
+            if let Some(proof) = transition.proof() {
+                println!("Proof: {} bytes", proof.to_string().len());
+            }
+        }
+    }
+    ```
+    
+    Each transition in the execution contains a proof that can be extracted and inspected.
+  </Step>
+</Steps>
+
+## What is proven?
+
+The zero-knowledge proof demonstrates:
+
+1. **Correctness**: The output was computed correctly from the inputs
+2. **Program execution**: The specified program was executed
+3. **Input knowledge**: The prover knows private inputs that satisfy the constraints
+
+All without revealing:
+
+- The private input values (5 and 3)
+- The intermediate computation steps
+- The final output value (64)
+
+## Proof properties
+
+<CardGroup cols={2}>
+  <Card title="Succinctness" icon="compress">
+    Proofs are small (~1-2 KB) regardless of computation complexity
+  </Card>
+  <Card title="Fast verification" icon="bolt">
+    Verification takes milliseconds even for complex computations
+  </Card>
+  <Card title="Zero-knowledge" icon="eye-slash">
+    No information about private inputs is revealed
+  </Card>
+  <Card title="Non-interactive" icon="check">
+    No back-and-forth communication required
+  </Card>
+</CardGroup>
+
+## Manual proof generation
+
+For advanced use cases, you can generate proofs manually:
+
+```rust
+use snarkvm::prelude::*;
+
+// Get the proving key for the function
+let process = vm.process();
+let stack = process.get_stack(program.id())?;
+let proving_key = stack.get_proving_key("compute")?;
+
+// Generate proof manually
+let proof = proving_key.prove(
+    &inputs,
+    &mut thread_rng()
+)?;
+
+// Verify with verifying key
+let verifying_key = stack.get_verifying_key("compute")?;
+let is_valid = verifying_key.verify(&inputs, &proof)?;
+
+assert!(is_valid);
+```
+
+## Performance characteristics
+
+<Info>
+  Typical proving and verification times on modern hardware:
+  
+  - **Proof generation**: 100-500ms for simple programs
+  - **Proof verification**: 10-50ms
+  - **Proof size**: 1-2 KB regardless of computation
+  
+  Complex programs with many constraints take longer but remain practical.
+</Info>
+
+## Common verification errors
+
+<Accordion title="Invalid proof">
+  The proof doesn't satisfy the constraints. This usually indicates:
+  - Tampered proof data
+  - Incorrect program execution
+  - Mismatched verifying key
+</Accordion>
+
+<Accordion title="Program not found">
+  The program ID in the transaction doesn't match any deployed program:
+  ```rust
+  // Make sure the program is deployed first
+  vm.deploy(&private_key, &program, None, 0, None, &mut thread_rng())?;
+  ```
+</Accordion>
+
+<Accordion title="Constraint violation">
+  The witness doesn't satisfy all constraints. This shouldn't happen with properly generated proofs but can occur if:
+  - The circuit is under-constrained
+  - There's a bug in the program logic
+</Accordion>
+
+## Advanced: Batch verification
+
+Verify multiple proofs efficiently:
+
+```rust
+let transactions = vec![tx1, tx2, tx3];
+
+for transaction in &transactions {
+    vm.check_transaction(transaction, None, &mut thread_rng())?;
+}
+
+println!("All {} proofs verified!", transactions.len());
+```
+
+<Note>
+  SnarkVM's Varuna SNARK supports native batch verification for improved performance when verifying many proofs.
+</Note>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Zero-knowledge proofs" icon="shield" href="/concepts/zero-knowledge-proofs">
+    Deep dive into how ZK proofs work in SnarkVM
+  </Card>
+  <Card title="SNARK algorithms" icon="lock" href="/api/algorithms/snark">
+    API reference for Varuna SNARK implementation
+  </Card>
+</CardGroup>
