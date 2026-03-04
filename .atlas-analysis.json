@@ -1,0 +1,164 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "SnarkVM",
+  "projectDescription": "A zero-knowledge virtual machine for decentralized private computations on the Aleo blockchain",
+  "theme": "aspen",
+  "primaryColor": "#242b2c",
+  "lightColor": "#040404",
+  "darkColor": "#6a6a6d",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/overview",
+              "concepts/architecture",
+              "concepts/consensus-and-circuit",
+              "concepts/zero-knowledge-proofs"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/creating-programs",
+              "guides/executing-transactions",
+              "guides/working-with-accounts",
+              "guides/managing-records",
+              "guides/deploying-programs"
+            ]
+          },
+          {
+            "group": "Advanced Topics",
+            "pages": [
+              "advanced/cuda-acceleration",
+              "advanced/custom-networks",
+              "advanced/storage-modes",
+              "advanced/wasm-integration"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "api/overview"
+            ]
+          },
+          {
+            "group": "Algorithms",
+            "pages": [
+              "api/algorithms/overview",
+              "api/algorithms/crypto-hash",
+              "api/algorithms/snark",
+              "api/algorithms/polycommit",
+              "api/algorithms/fft"
+            ]
+          },
+          {
+            "group": "Console",
+            "pages": [
+              "api/console/overview",
+              "api/console/account",
+              "api/console/types",
+              "api/console/program",
+              "api/console/network"
+            ]
+          },
+          {
+            "group": "Circuit",
+            "pages": [
+              "api/circuit/overview",
+              "api/circuit/types",
+              "api/circuit/environment",
+              "api/circuit/program"
+            ]
+          },
+          {
+            "group": "Synthesizer",
+            "pages": [
+              "api/synthesizer/overview",
+              "api/synthesizer/vm",
+              "api/synthesizer/process",
+              "api/synthesizer/program"
+            ]
+          },
+          {
+            "group": "Ledger",
+            "pages": [
+              "api/ledger/overview",
+              "api/ledger/block",
+              "api/ledger/store",
+              "api/ledger/query"
+            ]
+          },
+          {
+            "group": "Utilities",
+            "pages": [
+              "api/utilities/overview",
+              "api/utilities/serialization",
+              "api/utilities/parallel"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Examples",
+        "groups": [
+          {
+            "group": "Examples",
+            "pages": [
+              "examples/overview",
+              "examples/hello-world",
+              "examples/token-transfer",
+              "examples/custom-program",
+              "examples/proof-verification"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Zero-knowledge proof generation and verification",
+    "Decentralized virtual machine for private computations",
+    "Program synthesis and execution",
+    "Blockchain ledger with consensus mechanisms",
+    "Cryptographic primitives (Poseidon, Varuna, Marlin)",
+    "Account and transaction management",
+    "WASM support for web integration",
+    "CUDA acceleration for performance",
+    "Modular architecture with 9 core crates"
+  ],
+  "publicApiSurface": [
+    "snarkvm::prelude - Main prelude with commonly used types",
+    "snarkvm::algorithms - Cryptographic algorithms and SNARKs",
+    "snarkvm::circuit - Arithmetic circuits and constraint systems",
+    "snarkvm::console - Console types (Account, Program, Network)",
+    "snarkvm::synthesizer - Program synthesis and VM execution",
+    "snarkvm::ledger - Blockchain ledger and consensus",
+    "snarkvm::curves - Elliptic curve implementations",
+    "snarkvm::fields - Finite field arithmetic",
+    "snarkvm::parameters - Cryptographic parameters",
+    "snarkvm::utilities - Helper functions and macros",
+    "snarkvm::wasm - WebAssembly bindings",
+    "VM::execute - Execute programs and generate proofs",
+    "VM::deploy - Deploy programs to the network",
+    "Ledger::load - Load blockchain state from storage",
+    "Process::execute - Process program execution",
+    "PrivateKey/ViewKey/Address - Account management"
+  ]
+}
